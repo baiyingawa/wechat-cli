@@ -1,6 +1,10 @@
+import tempfile
 import unittest
 
-from wechat_cli.console import parse_shortcut
+from PIL import Image
+
+from wechat_cli.automation import Automation
+from wechat_cli.console import parse_shortcut, qr_terminal_art
 from wechat_cli.registry import capabilities
 
 
@@ -42,6 +46,20 @@ class ConsoleShortcutTests(unittest.TestCase):
     def test_feed_shortcut_opens_global_moments(self):
         request = parse_shortcut("/feed", [], self.methods)
         self.assertEqual(request["method"], "moments.feed.open")
+
+    def test_terminal_qr_art_uses_block_characters(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as file:
+            image = Image.new("L", (2, 2), 255)
+            image.putpixel((0, 0), 0)
+            image.save(file.name)
+            art = qr_terminal_art(file.name, columns=2)
+        self.assertEqual(art.splitlines()[0], "██  ")
+        self.assertEqual(art.splitlines()[1], "    ")
+
+    def test_qr_points_become_a_padded_crop(self):
+        rect = Automation.qr_rect_from_points(
+            [[[100, 120], [300, 120], [300, 320], [100, 320]]], 600, 500)
+        self.assertEqual(rect.as_list(), [76, 96, 248, 248])
 
 
 if __name__ == "__main__":

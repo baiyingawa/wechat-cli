@@ -34,6 +34,8 @@ class Automation:
             else OCR(engine_mode=1, profile="standard_fallback"))
         self.accessibility = Accessibility()
         self.last_wait = None
+        self._login_view = None
+        self._login_qr = None
 
     def close(self):
         if self.desktop:
@@ -173,9 +175,21 @@ class Automation:
         return session_start(self.config)
 
     def session_login(self):
-        status = self.session_status()
+        try:
+            status = self.session_status()
+        except AutomationError as error:
+            if error.code != "DISPLAY_UNAVAILABLE":
+                raise
+            self.session_start()
+            status = {"state": "not_running"}
         if status["state"] == "not_running":
-            raise AutomationError("CLIENT_NOT_RUNNING", "Start a session first")
+            self.session_start()
+            status = wait_until(
+                lambda: current if (current := self.session_status())["state"] != "not_running" else None,
+                lambda timeout: self.connect().wake(timeout), self.config.timeout,
+                "WeChat login window").value
+        if status["state"] == "not_running":
+            raise AutomationError("CLIENT_NOT_RUNNING", "Could not open the WeChat login window")
         action = "none"
         if status["state"] == "login_required":
             desktop = self.connect()
@@ -202,9 +216,83 @@ class Automation:
             elif any("手机上完成登录" in label for label, _ in labels):
                 action = "awaiting_phone"
             status = self.session_status()
-        return {**status, "login_action": action,
-                "screenshot": self.screenshot(window_id=status["window"]["id"])
-                if status["state"] == "login_required" else None}
+        artifacts = self.login_artifacts(status["window"]["id"]) if status["state"] == "login_required" else {}
+        return {**status, "login_action": action, **artifacts}
+
+    @staticmethod
+    def qr_rect_from_points(points, width, height):
+        coordinates = np.asarray(points, dtype=float).reshape(-1, 2)
+        if coordinates.shape[0] < 4:
+            return None
+        left, top = coordinates.min(axis=0)
+        right, bottom = coordinates.max(axis=0)
+        side = max(right - left, bottom - top)
+        if side < max(80, min(width, height) * 0.12):
+            return None
+        padding = max(8, round(side * 0.12))
+        x0 = max(0, round(left - padding))
+        y0 = max(0, round(top - padding))
+        x1 = min(width, round(right + padding))
+        y1 = min(height, round(bottom + padding))
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return Rect(x0, y0, x1 - x0, y1 - y0)
+
+    def detect_login_qr(self, image):
+        try:
+            import cv2
+        except ImportError:
+            return None
+        width, height = image.size
+        search = Rect(round(width * 0.18), round(height * 0.08),
+                      round(width * 0.64), round(height * 0.84))
+        candidate = np.asarray(image.crop((search.x, search.y, search.x + search.width,
+                                           search.y + search.height)))
+        found, points = cv2.QRCodeDetector().detect(cv2.cvtColor(candidate, cv2.COLOR_RGB2BGR))
+        if not found or points is None:
+            return None
+        relative = self.qr_rect_from_points(points, search.width, search.height)
+        if relative is None:
+            return None
+        return Rect(search.x + relative.x, search.y + relative.y, relative.width, relative.height)
+
+    def save_capture(self, image, rect, prefix="screen"):
+        directory = self.state.directory / "screenshots"
+        directory.mkdir(exist_ok=True, mode=0o700)
+        path = directory / f"{prefix}-{time.time_ns()}.png"
+        image.save(path)
+        path.chmod(0o600)
+        return {"path": str(path), "region": rect.as_list()}
+
+    def login_artifacts(self, window_id):
+        desktop = self.connect()
+        window = next((item for item in desktop.windows() if item.id == window_id), None)
+        if window is None:
+            raise AutomationError("WINDOW_NOT_FOUND", "Login window is no longer visible")
+        image = desktop.capture(window.rect)
+        digest = image_digest(image)
+        cached = getattr(self, "_login_view", None)
+        if cached and cached["digest"] == digest:
+            return {"screenshot": {**cached["screenshot"], "changed": False},
+                    "qr": ({**self._login_qr, "changed": False}
+                           if getattr(self, "_login_qr", None) else None)}
+        screenshot = self.save_capture(image, window.rect, "login")
+        screenshot["changed"] = True
+        qr = None
+        qr_rect = self.detect_login_qr(image)
+        if qr_rect is not None:
+            crop = image.crop((qr_rect.x, qr_rect.y, qr_rect.x + qr_rect.width, qr_rect.y + qr_rect.height))
+            qr_digest = image_digest(crop)
+            previous_qr = getattr(self, "_login_qr", None)
+            if previous_qr and previous_qr["digest"] == qr_digest:
+                qr = {**previous_qr, "changed": False}
+            else:
+                qr = self.save_capture(crop, Rect(window.rect.x + qr_rect.x, window.rect.y + qr_rect.y,
+                                                   qr_rect.width, qr_rect.height), "login-qr")
+                qr.update({"digest": qr_digest, "changed": True})
+        self._login_view = {"digest": digest, "screenshot": screenshot}
+        self._login_qr = qr
+        return {"screenshot": screenshot, "qr": qr}
 
     def session_remote(self):
         from .deployment import start_remote
@@ -252,12 +340,7 @@ class Automation:
                 raise AutomationError("WINDOW_NOT_FOUND", "Window is no longer visible")
             region = window.rect.as_list()
         rect = Rect(*region) if region is not None else desktop.bounds
-        directory = self.state.directory / "screenshots"
-        directory.mkdir(exist_ok=True, mode=0o700)
-        path = directory / f"screen-{time.time_ns()}.png"
-        desktop.capture(rect).save(path)
-        path.chmod(0o600)
-        return {"path": str(path), "region": rect.as_list()}
+        return self.save_capture(desktop.capture(rect), rect)
 
     def ui_windows(self):
         return {"windows": [window.as_dict() for window in self.connect().windows()]}

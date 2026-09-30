@@ -2,7 +2,10 @@ import json
 import os
 import shlex
 import sys
+import time
 import uuid
+
+from PIL import Image
 
 from .config import Config
 from .errors import AutomationError
@@ -12,6 +15,42 @@ from . import service
 
 def print_json(value):
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def qr_terminal_art(path, columns=48):
+    with Image.open(path) as source:
+        image = source.convert("L")
+        side = min(columns, image.width, image.height)
+        image = image.resize((side, side), Image.Resampling.NEAREST)
+        pixels = image.load()
+        return "\n".join("".join("██" if pixels[x, y] < 150 else "  " for x in range(side))
+                         for y in range(side))
+
+
+def run_login(config, methods):
+    print("正在启动并识别登录界面；扫码后会自动检测登录完成。按 Ctrl-C 返回控制台。")
+    last_qr_digest = None
+    screenshot_printed = False
+    while True:
+        request = build_request("session.login", {}, methods)
+        response = service.call(config, request)
+        if not response.get("ok"):
+            print_json(response)
+            return
+        result = response["result"]
+        if result["state"] == "logged_in":
+            print("登录完成。")
+            return
+        screenshot = result.get("screenshot")
+        qr = result.get("qr")
+        if qr and qr["digest"] != last_qr_digest:
+            print(f"二维码截图：{qr['path']}")
+            print(qr_terminal_art(qr["path"]))
+            last_qr_digest = qr["digest"]
+        elif screenshot and not screenshot_printed:
+            print(f"登录界面截图：{screenshot['path']}")
+            screenshot_printed = True
+        time.sleep(0.5)
 
 
 def print_help(method_name=None):
@@ -25,7 +64,7 @@ def print_help(method_name=None):
         return
     if not method_name:
         print("Common commands:")
-        print("  /start | /login | /logout             Start WeChat, log in, or log out")
+        print("  /start | /login | /logout             Start WeChat; auto-click login and show QR; log out")
         print("  /status | /maximize | /reset          Check session, maximize, or restore chat view")
         print("  /gui on|off | /remote                 Toggle Windows VNC access or show remote VNC details")
         print("  /chat CHAT TEXT                        Send a message, e.g. /chat False 111")
@@ -198,6 +237,17 @@ def main():
         if command in ("/status", "/doctor"):
             method = "session.status" if command == "/status" else "doctor"
             print_json(service.call(config, {"id": f"console-{uuid.uuid4()}", "method": method, "params": {}}))
+            continue
+        if command == "/login":
+            if rest:
+                print("Error: Usage: /login", file=sys.stderr)
+                continue
+            try:
+                run_login(config, methods)
+            except KeyboardInterrupt:
+                print("\n已停止等待登录。")
+            except AutomationError as error:
+                print(f"Error: {error}", file=sys.stderr)
             continue
         if command == "/mcp":
             print("MCP launcher: mcp.sh")
