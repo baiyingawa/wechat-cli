@@ -16,28 +16,27 @@ def print_json(value):
 
 def print_help(method_name=None):
     methods = capabilities()["methods"]
-    selected = [item for item in methods if item["method"] == method_name] if method_name else methods
+    if method_name:
+        selected = [item for item in methods if item["method"] == method_name]
+    else:
+        selected = []
     if method_name and not selected:
         print(f"Unknown method: {method_name}", file=sys.stderr)
         return
-    print("Commands:")
-    print("  /help [METHOD]                         Show all methods or one method schema")
-    print("  /methods [PREFIX]                      List methods, optionally filtered by prefix")
-    print("  METHOD JSON [--key KEY] [--confirm TOKEN]")
-    print("  /call METHOD JSON [--key KEY] [--confirm TOKEN]")
-    print("  /url | /status | /doctor | /mcp | /exit")
-    print("Human-friendly shortcuts:")
-    print("  /chat CHAT TEXT                        Send a message, e.g. /chat False 111")
-    print("  /open CHAT | /read CHAT [LIMIT]        Open a chat or read up to 30 messages")
-    print("  /find CHAT TEXT | /recall CHAT TEXT    Search recent messages or recall one")
-    print("  /contact CHAT | /pat CHAT [self|other] Read contact details or pat an avatar")
-    print("  /moments CHAT | /like CHAT POST        Open Moments or like a text post")
-    print("  /unlike CHAT POST | /feed              Remove a like or open the Moments feed")
-    print("JSON containing spaces must be quoted. Example:")
-    print("  message.read '{\"chat\":\"False\",\"limit\":30}'")
-    print("  message.send '{\"chat\":\"False\",\"text\":\"111111\"}' --key send-false-001")
-    print("Destructive methods first return a confirm_token. Repeat the identical command within 120 seconds")
-    print("with --confirm TOKEN and the same --key KEY. A generated key is printed for convenience.\n")
+    if not method_name:
+        print("Common commands:")
+        print("  /start | /login | /logout             Start WeChat, log in, or log out")
+        print("  /status | /maximize | /reset          Check session, maximize, or restore chat view")
+        print("  /gui on|off | /remote                 Toggle Windows VNC access or show remote VNC details")
+        print("  /chat CHAT TEXT                        Send a message, e.g. /chat False 111")
+        print("  /open CHAT | /read CHAT [LIMIT]        Open a chat or read up to 30 messages")
+        print("  /find CHAT TEXT | /recall CHAT TEXT    Search recent messages or recall one")
+        print("  /contact CHAT | /pat CHAT [self|other] Read contact details or pat an avatar")
+        print("  /moments CHAT | /like CHAT POST        Open Moments or like a text post")
+        print("  /unlike CHAT POST | /feed              Remove a like or open the Moments feed")
+        print("  /url | /doctor | /mcp | /exit")
+        print("Use /methods to list advanced APIs, or /help METHOD for its parameters.")
+        return
     for item in selected:
         schema = item.get("params_schema", {})
         required = ", ".join(schema.get("required", ())) or "none"
@@ -99,6 +98,16 @@ def parse_invocation(tokens, methods):
 
 
 def parse_shortcut(command, tokens, methods):
+    if command in ("/start", "/login", "/logout", "/maximize", "/reset", "/remote"):
+        if tokens:
+            raise ValueError(f"Usage: {command}")
+        method = {"/start": "session.start", "/login": "session.login", "/logout": "session.logout",
+                  "/maximize": "ui.maximize", "/reset": "ui.reset", "/remote": "session.remote"}[command]
+        return build_request(method, {}, methods)
+    if command == "/gui":
+        if len(tokens) != 1 or tokens[0] not in ("on", "off"):
+            raise ValueError("Usage: /gui on|off")
+        return build_request("session.gui", {"enabled": tokens[0] == "on"}, methods)
     if command == "/chat":
         if len(tokens) < 2:
             raise ValueError("Usage: /chat CHAT TEXT")

@@ -16,6 +16,15 @@ class ConsoleShortcutTests(unittest.TestCase):
         self.assertEqual(request["params"], {"chat": "False", "text": "hello world"})
         self.assertTrue(request["idempotency_key"].startswith("console-"))
 
+    def test_login_shortcut_starts_manual_login(self):
+        request = parse_shortcut("/login", [], self.methods)
+        self.assertEqual(request["method"], "session.login")
+        self.assertEqual(request["params"], {})
+
+    def test_gui_shortcut_accepts_on_and_off(self):
+        self.assertTrue(parse_shortcut("/gui", ["on"], self.methods)["params"]["enabled"])
+        self.assertFalse(parse_shortcut("/gui", ["off"], self.methods)["params"]["enabled"])
+
     def test_read_shortcut_keeps_optional_limit_numeric(self):
         request = parse_shortcut("/read", ["False", "30"], self.methods)
         self.assertEqual(request["method"], "message.read")
