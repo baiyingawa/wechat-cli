@@ -4,6 +4,7 @@ import select
 import subprocess
 import time
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass
 
 from PIL import Image
@@ -90,17 +91,19 @@ class Desktop:
     def wake(self, timeout):
         if self.drain():
             return True
-        ready, _, _ = select.select([self.connection.fileno()], [], [], timeout)
+        ready, _, _ = select.select([self.connection.fileno()], [], [], max(0, timeout))
         if ready:
             return self.drain()
         return False
 
     def windows(self):
         result = []
-        queue = [(self.root, 0)]
+        queue = deque([(self.root, 0)])
+        name_atom = self.connection.intern_atom("_NET_WM_NAME")
+        screen = self.bounds
         seen = set()
         while queue:
-            parent, depth = queue.pop(0)
+            parent, depth = queue.popleft()
             try:
                 for window in parent.query_tree().children:
                     if window.id in seen:
@@ -112,14 +115,13 @@ class Desktop:
                     classes = window.get_wm_class() or ()
                     class_name = "/".join(classes)
                     title_property = window.get_full_property(
-                        self.connection.intern_atom("_NET_WM_NAME"), X.AnyPropertyType)
+                        name_atom, X.AnyPropertyType)
                     title = (title_property.value.decode("utf-8", errors="replace")
                              if title_property is not None else window.get_wm_name() or "")
                     if "wechat" in class_name.lower():
                         geometry = window.get_geometry()
                         position = self.root.translate_coords(window, 0, 0)
                         if geometry.width > 20 and geometry.height > 20:
-                            screen = self.bounds
                             x = max(screen.x, min(position.x, screen.x + screen.width - 1))
                             y = max(screen.y, min(position.y, screen.y + screen.height - 1))
                             width = min(geometry.width, screen.x + screen.width - x)
@@ -148,8 +150,8 @@ class Desktop:
         started = time.monotonic()
         pixels = self.root.get_image(rect.x, rect.y, rect.width, rect.height, X.ZPixmap, 0xffffffff)
         formats = self.connection.display.info.pixmap_formats
-        pixel_format = next(item for item in formats if item.depth == pixels.depth)
-        if pixel_format.bits_per_pixel != 32 or self.connection.display.info.image_byte_order != 0:
+        pixel_format = next((item for item in formats if item.depth == pixels.depth), None)
+        if pixel_format is None or pixel_format.bits_per_pixel != 32 or self.connection.display.info.image_byte_order != 0:
             raise AutomationError("UNSUPPORTED_DISPLAY", "Use a little-endian 24-bit X11 display")
         image = Image.frombytes("RGB", (rect.width, rect.height), pixels.data, "raw", "BGRX")
         self.captures += 1
@@ -172,7 +174,7 @@ class Desktop:
             remaining_quiet = quiet_ms / 1000 - (time.monotonic() - last_changed)
             if remaining_quiet <= 0:
                 return {"stable": True, "elapsed_ms": round((time.monotonic() - started) * 1000, 3)}
-            self.wake(min(remaining_quiet, deadline - time.monotonic()))
+            self.wake(max(0, min(remaining_quiet, deadline - time.monotonic())))
             current = self.fingerprint(rect)
             if current != previous:
                 previous = current
@@ -258,11 +260,18 @@ class Desktop:
             if not keycode:
                 raise AutomationError("INVALID_KEY", f"Unknown key: {key}")
             keycodes.append(keycode)
-        for keycode in keycodes:
-            xtest.fake_input(self.connection, X.KeyPress, detail=keycode)
-        for keycode in reversed(keycodes):
-            xtest.fake_input(self.connection, X.KeyRelease, detail=keycode)
-        self.connection.sync()
+        pressed = []
+        try:
+            for keycode in keycodes:
+                pressed.append(keycode)
+                xtest.fake_input(self.connection, X.KeyPress, detail=keycode)
+        finally:
+            for keycode in reversed(pressed):
+                try:
+                    xtest.fake_input(self.connection, X.KeyRelease, detail=keycode)
+                except error.XError:
+                    pass
+            self.connection.sync()
 
     def claim_clipboard(self, text):
         self.check_pointer()

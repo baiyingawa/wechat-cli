@@ -15,6 +15,7 @@ class State:
         self.directory.chmod(0o700)
         self.connection = sqlite3.connect(self.directory / "state.sqlite3")
         self.connection.execute("PRAGMA journal_mode=WAL")
+        self.connection.execute("PRAGMA secure_delete=ON")
         self.connection.executescript("""
             CREATE TABLE IF NOT EXISTS requests (
                 request_key TEXT PRIMARY KEY, digest TEXT NOT NULL,
@@ -86,6 +87,25 @@ class State:
                                 (json.dumps(response, ensure_ascii=False), key))
         self.connection.commit()
 
+    def resolve(self, key, outcome):
+        row = self.connection.execute(
+            "SELECT state,response FROM requests WHERE request_key=?", (key,)).fetchone()
+        if row is None:
+            raise AutomationError("KEY_NOT_FOUND", "No execution is recorded for this key")
+        response = json.loads(row[1]) if row[1] else None
+        if row[0] == "completed" and (response or {}).get("error", {}).get("code") not in (
+                "OUTCOME_UNKNOWN", "TRANSPORT_UNKNOWN", "INTERNAL_ERROR"):
+            raise AutomationError("RESOLUTION_UNAVAILABLE", "Only unknown executions may be resolved")
+        if outcome == "executed":
+            self.complete(key, {"protocol_version": 1, "ok": True, "result": {
+                "status": "manually_resolved", "outcome": outcome, "delivery_confirmed": False}})
+        elif outcome == "not_executed":
+            self.connection.execute("DELETE FROM requests WHERE request_key=?", (key,))
+            self.connection.commit()
+        else:
+            raise AutomationError("INVALID_PARAMS", "outcome must be executed or not_executed")
+        return {"key": key, "outcome": outcome, "retry_allowed": outcome == "not_executed"}
+
     def cursor(self, chat, value=None):
         if value is not None:
             self.connection.execute("INSERT OR REPLACE INTO cursors VALUES (?,?,?)",
@@ -137,9 +157,30 @@ class State:
         self.connection.commit()
 
     def cleanup(self, days=15):
-        self.connection.execute("DELETE FROM confirmations WHERE expires<?", (time.time(),))
+        now = time.time()
+        cutoff = now - days * 86400
+        self.connection.execute("DELETE FROM confirmations WHERE expires<?", (now,))
+        cursors_removed = self.connection.execute(
+            "DELETE FROM cursors WHERE updated<?", (cutoff,)).rowcount
+        rows = self.connection.execute(
+            "SELECT request_key,state,response FROM requests WHERE created<?", (cutoff,)).fetchall()
+        expired_keys = []
+        retained_keys = []
+        for key, status, raw in rows:
+            response = json.loads(raw) if raw else {}
+            if status != "completed" or response.get("error", {}).get("code") in (
+                    "OUTCOME_UNKNOWN", "TRANSPORT_UNKNOWN", "INTERNAL_ERROR"):
+                retained_keys.append((key,))
+            else:
+                expired_keys.append((key,))
+        self.connection.executemany("DELETE FROM requests WHERE request_key=?", expired_keys)
+        unknown = json.dumps({"protocol_version": 1, "ok": False, "error": {
+            "code": "OUTCOME_UNKNOWN", "retryable": False,
+            "message": "Expired execution remains uncertain; inspect and use state.resolve"}})
+        self.connection.executemany("UPDATE requests SET response=? WHERE request_key=? AND state='completed'",
+                                    [(unknown, key[0]) for key in retained_keys])
         self.connection.commit()
-        cutoff = time.time() - days * 86400
+        self.connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         removed = 0
         for name in ("screenshots", "logs"):
             directory = self.directory / name
@@ -149,4 +190,5 @@ class State:
                 if entry.is_file() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
                     entry.unlink()
                     removed += 1
-        return {"removed": removed, "retention_days": days}
+        return {"removed": removed, "requests_removed": len(expired_keys), "cursors_removed": cursors_removed,
+                "unknown_keys_retained": len(retained_keys), "retention_days": days}

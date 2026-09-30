@@ -27,9 +27,10 @@ def decode(raw):
 
 
 class Dispatcher:
-    def __init__(self, automation, state):
+    def __init__(self, automation, state, service_status=None):
         self.automation = automation
         self.state = state
+        self.service_status = service_status
 
     def dispatch(self, request):
         started = time.monotonic()
@@ -50,7 +51,7 @@ class Dispatcher:
             if not isinstance(name, str):
                 raise AutomationError("INVALID_REQUEST", "method must be a string")
             params = request.get("params", {})
-            if name in ("ping", "capabilities", "metrics", "state.cleanup"):
+            if name in ("ping", "capabilities", "metrics", "state.cleanup", "service.status"):
                 if params != {}:
                     raise AutomationError("INVALID_PARAMS", "This method takes no parameters")
                 if name == "ping":
@@ -59,8 +60,10 @@ class Dispatcher:
                     result = capabilities()
                 elif name == "metrics":
                     result = self.automation.metrics()
+                elif name == "service.status":
+                    result = self.service_status() if self.service_status else {"status": "ready", "busy": False}
                 else:
-                    result = self.state.cleanup()
+                    result = self.state.cleanup(self.automation.config.retention_days)
             else:
                 if name in PLANNED:
                     raise AutomationError("NOT_IMPLEMENTED", "Capability is planned, not implemented", {"method": name})

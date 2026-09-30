@@ -177,6 +177,9 @@ class TaskStore:
                 "FROM web_tasks WHERE id=?", (task_id,)).fetchone()
         if row is None:
             raise KeyError(task_id)
+        return self._task_from_row(row)
+
+    def _task_from_row(self, row):
         request = json.loads(row[2])
         return {"id": row[0], "method": row[1], "request": request, "status": row[3],
                 "result": json.loads(row[4]) if row[4] else None, "duplicate_of": row[5],
@@ -186,8 +189,36 @@ class TaskStore:
 
     def list(self):
         with self.lock:
-            rows = self.connection.execute("SELECT id FROM web_tasks ORDER BY created DESC LIMIT 100").fetchall()
-        return [self.get(row[0]) for row in rows]
+            rows = self.connection.execute(
+                "SELECT id,method,request,status,result,duplicate_of,created,updated,context,phases "
+                "FROM web_tasks ORDER BY created DESC LIMIT 100").fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def queued_ids(self):
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT id FROM web_tasks WHERE status='queued' ORDER BY created").fetchall()
+        return [row[0] for row in rows]
+
+    def recover_interrupted(self):
+        now = self.now()
+        with self.lock:
+            rows = self.connection.execute(
+                "SELECT id,phases FROM web_tasks WHERE status='running'").fetchall()
+            for task_id, raw_phases in rows:
+                phases = self._decode_phases(raw_phases)
+                for phase in phases.values():
+                    if phase.get("status") in ("running", "pending"):
+                        phase.update(status="unknown", reason="demo_restarted")
+                response = {"ok": False, "error": {
+                    "code": "OUTCOME_UNKNOWN", "retryable": False,
+                    "message": "Demo stopped during execution; inspect WeChat before retrying"}}
+                self.connection.execute(
+                    "UPDATE web_tasks SET status='unknown',result=?,phases=?,updated=? WHERE id=?",
+                    (json.dumps(response), json.dumps(phases), now, task_id))
+            self.connection.execute("DELETE FROM web_queue_context")
+            self.connection.commit()
+        return len(rows)
 
     def claim(self, task_id):
         now = self.now()

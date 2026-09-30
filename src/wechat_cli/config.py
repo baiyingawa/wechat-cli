@@ -36,6 +36,10 @@ class Config:
     def socket_path(self):
         return self.runtime_dir / "service.sock"
 
+    @property
+    def control_socket_path(self):
+        return self.runtime_dir / "control.sock"
+
     @classmethod
     def from_env(cls):
         try:

@@ -37,6 +37,10 @@ METHODS = {
     "ui.maximize": Method("ui_maximize", "Fit client to virtual display", {}, mutation=True),
     "ui.reset": Method("ui_reset", "Close transient panels and restore the reusable chat surface", {}, mutation=True),
     "account.profile": Method("account_profile", "Read the locally cached account profile without UI interaction", {}),
+    "state.resolve": Method("state_resolve", "After manual inspection, resolve an unknown execution; requires confirmation", {
+        "key": {"type": "string", "minLength": 1, "maxLength": 200},
+        "outcome": {"type": "string", "enum": ["executed", "not_executed"]}},
+        ("key", "outcome"), mutation=True, destructive=True, verification="local"),
     "account.refresh": Method("account_refresh", "Refresh and persist account name, WeChat ID, and opened avatar subject to a two-hour rate limit", {}, mutation=True),
     "chat.open": Method("chat_open", "Open an exact display-name match and verify header",
                         {"chat": CHAT}, ("chat",), mutation=True),
@@ -157,13 +161,17 @@ PLANNED = {
 }
 
 SYSTEM_METHODS = (
+    {"method": "service.status", "status": "implemented", "verification": "local",
+     "description": "Inspect automation service workload without waiting for desktop operations",
+     "params_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+     "mutation": False, "destructive": False, "idempotency_required": False},
     {"method": "metrics", "status": "implemented", "verification": "local",
      "description": "Read local automation timing and OCR metrics",
      "params_schema": {"type": "object", "properties": {}, "required": [],
                        "additionalProperties": False},
      "mutation": False, "destructive": False, "idempotency_required": False},
     {"method": "state.cleanup", "status": "implemented", "verification": "local",
-     "description": "Remove wechat-cli screenshots and logs older than the configured retention period",
+     "description": "Expire screenshots, logs, completed request results and cursors; preserve unknown execution keys",
      "params_schema": {"type": "object", "properties": {}, "required": [],
                        "additionalProperties": False},
      "mutation": True, "destructive": False, "idempotency_required": False},

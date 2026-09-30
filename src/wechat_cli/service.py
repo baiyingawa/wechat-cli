@@ -5,19 +5,46 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 from .errors import AutomationError
 from .protocol import MAX_REQUEST_BYTES, Dispatcher, decode, encode, failure
 from .state import State
+from .wait import wait_until
 
 
-def exchange(config, request, timeout=60):
+FAST_METHODS = frozenset({"ping", "capabilities", "service.status"})
+
+
+def request_timeout(config, request):
+    method = request.get("method") if isinstance(request, dict) else None
+    baseline = max(60, config.timeout * 12)
+    if method in ("message.read", "message.search"):
+        params = request.get("params", {})
+        limit = params.get("limit", 30) if isinstance(params, dict) else 30
+        pages = limit if type(limit) is int and 1 <= limit <= 30 else 30
+        return max(baseline, pages * max(30, config.timeout * 4))
+    if method in ("message.send_file", "message.download", "moments.publish", "message.forward"):
+        return max(300, config.timeout * 30)
+    if method in ("session.start", "session.login", "account.refresh"):
+        return max(120, config.timeout * 20)
+    return baseline
+
+
+def exchange(config, request, timeout=None):
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.settimeout(timeout)
+    connection.settimeout(request_timeout(config, request) if timeout is None else timeout)
     try:
-        connection.connect(str(config.socket_path))
+        if (isinstance(request, dict) and isinstance(request.get("method"), str)
+                and request["method"] in FAST_METHODS):
+            try:
+                connection.connect(str(config.control_socket_path))
+            except (FileNotFoundError, ConnectionRefusedError):
+                connection.connect(str(config.socket_path))
+        else:
+            connection.connect(str(config.socket_path))
         connection.sendall(encode(request))
         with connection.makefile("rb") as stream:
             raw = stream.readline(16 * MAX_REQUEST_BYTES + 1)
@@ -58,6 +85,16 @@ def start(config):
     response = decode_response(process.stdout.readline())
     process.stdout.close()
     if not response.get("ok"):
+        if response.get("error", {}).get("code") == "SERVICE_ALREADY_RUNNING":
+            def ready_service():
+                try:
+                    return exchange(config, {"method": "ping"}, timeout=1)
+                except AutomationError as error:
+                    if error.code != "SERVICE_UNAVAILABLE":
+                        raise
+                    return None
+            return wait_until(ready_service, lambda seconds: select.select([], [], [], seconds),
+                              8, "the existing service to become ready").value
         raise AutomationError("SERVICE_START_FAILED", "Service failed to start", {"response": response})
     return response
 
@@ -84,17 +121,23 @@ def serve(config):
         print(encode(failure(None, AutomationError("SERVICE_ALREADY_RUNNING", "Another service owns the desktop"))).decode(),
               end="", flush=True)
         return
-    if config.socket_path.is_symlink():
-        raise AutomationError("UNSAFE_SOCKET", "Socket path must not be a symbolic link")
-    config.socket_path.unlink(missing_ok=True)
+    for path in (config.socket_path, config.control_socket_path):
+        if path.is_symlink():
+            raise AutomationError("UNSAFE_SOCKET", "Socket path must not be a symbolic link")
+        path.unlink(missing_ok=True)
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(config.socket_path))
     config.socket_path.chmod(0o600)
     listener.listen(16)
+    control_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    control_listener.bind(str(config.control_socket_path))
+    config.control_socket_path.chmod(0o600)
+    control_listener.listen(16)
     state = State(config.state_dir)
     automation = Automation(config, state)
-    dispatcher = Dispatcher(automation, state)
     running = True
+    workload = {"status": "ready", "busy": False, "method": None, "request_id": None}
+    dispatcher = Dispatcher(automation, state, service_status=lambda: dict(workload))
     last_request_completed = time.monotonic()
 
     def shutdown(signum, frame):
@@ -103,6 +146,36 @@ def serve(config):
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
+
+    def control_loop():
+        while running:
+            ready, _, _ = select.select([control_listener], [], [], 0.2)
+            if not ready:
+                continue
+            connection, _ = control_listener.accept()
+            with connection:
+                connection.settimeout(3)
+                try:
+                    with connection.makefile("rb") as stream:
+                        raw = stream.readline(MAX_REQUEST_BYTES + 1)
+                    if not raw.endswith(b"\n"):
+                        raise AutomationError("INVALID_REQUEST", "Request must be newline terminated")
+                    request = decode(raw)
+                    if (not isinstance(request, dict) or not isinstance(request.get("method"), str)
+                            or request["method"] not in FAST_METHODS):
+                        raise AutomationError("METHOD_NOT_FOUND", "Control socket accepts only service status queries")
+                    response = dispatcher.dispatch(request)
+                except AutomationError as error:
+                    response = failure(None, error)
+                except OSError:
+                    continue
+                try:
+                    connection.sendall(encode(response))
+                except OSError:
+                    pass
+
+    control_thread = threading.Thread(target=control_loop, daemon=True)
+    control_thread.start()
     (config.runtime_dir / "service.pid").write_text(str(os.getpid()))
     print(encode({"ok": True, "result": {"status": "ready", "pid": os.getpid(),
                                          "socket": str(config.socket_path)}}).decode(), end="", flush=True)
@@ -114,10 +187,12 @@ def serve(config):
                 if (time.monotonic() - last_request_completed >= 300
                         and state.account_refresh_due()):
                     try:
+                        workload = {"status": "ready", "busy": True, "method": "account.refresh", "request_id": None}
                         automation.refresh_account_profile()
                     except AutomationError:
                         pass
                     finally:
+                        workload = {"status": "ready", "busy": False, "method": None, "request_id": None}
                         last_request_completed = time.monotonic()
                 continue
             connection, _ = listener.accept()
@@ -129,7 +204,13 @@ def serve(config):
                         if not raw.endswith(b"\n"):
                             raise AutomationError("INVALID_REQUEST", "Request must be newline terminated")
                         request = decode(raw)
-                    response = dispatcher.dispatch(request)
+                    workload = {"status": "ready", "busy": True,
+                                "method": request.get("method") if isinstance(request, dict) else None,
+                                "request_id": request.get("id") if isinstance(request, dict) else None}
+                    try:
+                        response = dispatcher.dispatch(request)
+                    finally:
+                        workload = {"status": "ready", "busy": False, "method": None, "request_id": None}
                 except AutomationError as error:
                     response = failure(None, error)
                 except (TimeoutError, OSError):
@@ -140,6 +221,10 @@ def serve(config):
                     pass
                 last_request_completed = time.monotonic()
     finally:
+        running = False
+        control_thread.join()
+        control_listener.close()
+        config.control_socket_path.unlink(missing_ok=True)
         automation.close()
         state.close()
         listener.close()

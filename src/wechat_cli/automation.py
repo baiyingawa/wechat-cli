@@ -11,6 +11,7 @@ from PIL import Image
 from .accessibility import Accessibility
 from .errors import AutomationError
 from .ocr import OCR, RapidOCRReader
+from .private_files import save_private_image
 from .vision import (adjacent_bubble, avatar_template_match, bubble_regions, editor_has_content,
                      image_digest, merge_message_pages, runs, text_identity)
 from .wait import wait_until
@@ -40,6 +41,9 @@ class Automation:
     def close(self):
         if self.desktop:
             self.desktop.close()
+
+    def state_resolve(self, key, outcome):
+        return self.state.resolve(key, outcome)
 
     def connect(self):
         if self.desktop is None:
@@ -283,9 +287,9 @@ class Automation:
     def save_capture(self, image, rect, prefix="screen"):
         directory = self.state.directory / "screenshots"
         directory.mkdir(exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
         path = directory / f"{prefix}-{time.time_ns()}.png"
-        image.save(path)
-        path.chmod(0o600)
+        save_private_image(image, path)
         return {"path": str(path), "region": rect.as_list()}
 
     def login_artifacts(self, window_id):
@@ -419,12 +423,27 @@ class Automation:
         return self.refresh_account_profile(now)
 
     def refresh_account_profile(self, now=None):
+        desktop = self.connect()
+        previous = {window.id for window in desktop.windows()}
+        try:
+            return self._refresh_account_profile(now)
+        finally:
+            try:
+                opened = [window for window in desktop.windows() if window.id not in previous]
+                for window in opened:
+                    if window.title == "图片和视频":
+                        desktop.close_window(window)
+                if any(window.title == "wechat" and 240 <= window.rect.width <= 450
+                       and 180 <= window.rect.height <= 400 for window in opened):
+                    desktop.key("Escape")
+            except Exception:
+                pass
+
+    def _refresh_account_profile(self, now=None):
         now = time.time() if now is None else now
         desktop = self.connect()
         windows = desktop.windows()
-        main = next((window for window in windows if window.title == "微信"), None)
-        if main is None:
-            raise AutomationError("CLIENT_NOT_RUNNING", "No visible WeChat window", retryable=True)
+        main = desktop.main_window()
         if any(window.id != main.id for window in windows):
             raise AutomationError("UI_BUSY", "Close secondary WeChat windows before refreshing the account profile",
                                   {"windows": [window.title for window in windows if window.id != main.id]}, retryable=True)
@@ -459,10 +478,10 @@ class Automation:
         avatar = desktop.capture(avatar_rect)
         directory = self.state.directory / "account"
         directory.mkdir(exist_ok=True, mode=0o700)
+        directory.chmod(0o700)
         destination = directory / "avatar.png"
-        temporary = directory / ".avatar.png.tmp"
-        avatar.save(temporary, format="PNG")
-        temporary.chmod(0o600)
+        temporary = directory / f".avatar-{time.time_ns()}.png"
+        save_private_image(avatar, temporary)
         temporary.replace(destination)
         destination.chmod(0o600)
         desktop.close_window(avatar_window)
@@ -653,6 +672,8 @@ class Automation:
             raise AutomationError("OUTCOME_UNKNOWN", "Setting changed but did not verify",
                                   {"observed": [line["text"] for line in verification], "actual": actual})
         except AutomationError as error:
+            if error.code == "OUTCOME_UNKNOWN":
+                raise
             raise AutomationError("OUTCOME_UNKNOWN", "Setting was clicked but not verified",
                                   {"cause": error.as_dict()}) from error
 
@@ -1513,9 +1534,10 @@ class Automation:
         except AutomationError as error:
             raise AutomationError("DRAFT_UNVERIFIED", "Could not verify the existing editor content",
                                   {"cause": error.as_dict()}) from error
-        if existing and existing != text:
+        if existing:
             desktop.key("Escape")
-            raise AutomationError("DRAFT_PRESENT", "Existing draft will not be overwritten")
+            raise AutomationError("DRAFT_PRESENT", "Existing draft will not be sent or overwritten",
+                                  {"matches_requested_text": existing == text})
         if not existing:
             desktop.paste(text)
             try:
@@ -1525,7 +1547,7 @@ class Automation:
                                       {"cause": error.as_dict()}) from error
             if copied != text:
                 raise AutomationError("DRAFT_UNVERIFIED", "Pasted editor text differs from the requested message")
-        if self.current_chat(main) != text_identity(chat):
+        if not self.chat_header_matches(self.current_chat(main), chat):
             raise AutomationError("TARGET_CHANGED", "Conversation changed before submission")
         desktop.click(main.rect.x + main.rect.width - 80, main.rect.y + main.rect.height - 35)
         try:
@@ -1550,10 +1572,12 @@ class Automation:
         main = desktop.main_window()
         if editor_has_content(desktop.capture(self.editor_region(main))):
             raise AutomationError("DRAFT_PRESENT", "Existing draft will not be overwritten")
-        if self.current_chat(main) != text_identity(chat) or not self.composer_visible(main):
+        if not self.chat_header_matches(self.current_chat(main), chat) or not self.composer_visible(main):
             raise AutomationError("TARGET_CHANGED", "Conversation is not ready for a file")
-        recent = Rect(main.rect.x + main.rect.width - 1000,
-                      main.rect.y + main.rect.height - 1000, 990, 840)
+        content = self.content_region(main)
+        recent = Rect(max(content.x, main.rect.x + main.rect.width - 1000),
+                      max(content.y, main.rect.y + main.rect.height - 1000),
+                      min(content.width - 10, 990), min(content.height, 840))
         preview = Rect(main.rect.x + 300, main.rect.y + main.rect.height - 115,
                        min(1200, main.rect.width - 600), 90)
 

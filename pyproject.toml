@@ -9,8 +9,18 @@ description = "Machine-first Linux WeChat desktop automation"
 requires-python = ">=3.11"
 dependencies = ["Pillow>=10", "python-xlib>=0.33", "numpy>=1.24", "rapidocr-onnxruntime>=1.4.4,<2"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 wechat-cli = "wechat_cli.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+wechat_cli = ["static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

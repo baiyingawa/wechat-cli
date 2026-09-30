@@ -15,6 +15,7 @@ from wechat_cli.deployment import create_vnc_password, display_ready, launch, st
 from wechat_cli.protocol import Dispatcher, decode
 from wechat_cli.registry import METHODS, capabilities, validate
 from wechat_cli.state import State
+from wechat_cli.service import request_timeout
 from wechat_cli.vision import (adjacent_bubble, avatar_template_match, bubble_regions, merge_message_pages,
                                runs, text_identity)
 from wechat_cli.wait import wait_until
@@ -572,7 +573,7 @@ class MessageSearchTests(unittest.TestCase):
         desktop.paste.assert_called_once_with("hello")
         self.assertEqual(desktop.click.call_count, 1)
 
-    def test_send_reuses_an_exact_matching_draft(self):
+    def test_send_refuses_an_exact_matching_draft(self):
         automation = Automation.__new__(Automation)
         automation.config = SimpleNamespace(timeout=0.1)
         automation.chat_open = Mock()
@@ -585,11 +586,12 @@ class MessageSearchTests(unittest.TestCase):
         automation.semantic_wait = Mock()
         automation.find_message = Mock(return_value=Rect(1, 1, 1, 1))
 
-        with patch("wechat_cli.automation.wait_until",
-                   side_effect=lambda predicate, *args: SimpleNamespace(value=predicate())):
-            result = automation.message_send("False", "hello")
+        with self.assertRaises(AutomationError) as error:
+            automation.message_send("False", "hello")
 
-        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(error.exception.code, "DRAFT_PRESENT")
+        self.assertTrue(error.exception.details["matches_requested_text"])
+        self.assertEqual(desktop.click.call_count, 1)
         desktop.paste.assert_not_called()
         self.assertEqual(desktop.selected_text.call_count, 1)
 
@@ -724,6 +726,19 @@ class StateTests(unittest.TestCase):
         self.assertFalse(self.state.account_refresh_due(now=8_199))
         self.assertTrue(self.state.account_refresh_due(now=8_200))
 
+    def test_unknown_execution_can_be_manually_resolved(self):
+        self.state.claim("unknown-key", "message.send", {"text": "hello"})
+        self.state.complete("unknown-key", {"ok": False, "error": {"code": "OUTCOME_UNKNOWN"}})
+        result = self.state.resolve("unknown-key", "executed")
+        self.assertFalse(result["retry_allowed"])
+        self.assertEqual(self.state.lookup("unknown-key", "message.send", {"text": "hello"})["result"]["outcome"],
+                         "executed")
+
+    def test_unexecuted_resolution_allows_a_new_claim(self):
+        self.state.claim("retry-key", "message.send", {"text": "hello"})
+        self.state.resolve("retry-key", "not_executed")
+        self.assertIsNone(self.state.claim("retry-key", "message.send", {"text": "hello"}))
+
 
 class DemoTaskStoreTests(unittest.TestCase):
     def test_queue_generates_key_and_links_duplicates_to_root_task(self):
@@ -792,6 +807,32 @@ class DemoTaskStoreTests(unittest.TestCase):
                 self.assertIsNone(later["duplicate_of"])
             finally:
                 store.close()
+
+    def test_restart_marks_running_tasks_unknown_and_keeps_queued_tasks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "demo.sqlite3"
+            store = TaskStore(path)
+            running, _ = store.enqueue({"method": "session.status", "params": {}})
+            queued, _ = store.enqueue({"method": "doctor", "params": {}})
+            store.claim(running["id"])
+            store.close()
+            reopened = TaskStore(path)
+            try:
+                self.assertEqual(reopened.recover_interrupted(), 1)
+                self.assertEqual(reopened.get(running["id"])["status"], "unknown")
+                self.assertEqual(reopened.get(running["id"])["result"]["error"]["code"], "OUTCOME_UNKNOWN")
+                self.assertEqual(reopened.get(queued["id"])["status"], "queued")
+                self.assertEqual(reopened.queued_ids(), [queued["id"]])
+            finally:
+                reopened.close()
+
+
+class ServiceTimeoutTests(unittest.TestCase):
+    def test_long_running_methods_get_method_specific_timeouts(self):
+        config = SimpleNamespace(timeout=5)
+        self.assertEqual(request_timeout(config, {"method": "session.status"}), 60)
+        self.assertEqual(request_timeout(config, {"method": "message.read", "params": {"limit": 30}}), 900)
+        self.assertEqual(request_timeout(config, {"method": "message.download", "params": {}}), 300)
 
 
 class DemoTaskRunnerTests(unittest.TestCase):
