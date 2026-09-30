@@ -1494,6 +1494,12 @@ class Automation:
         return Rect(main.rect.x + 400, main.rect.y + main.rect.height - 95,
                     min(1200, main.rect.width - 550), 45)
 
+    def draft_empty(self, main):
+        region = Rect(main.rect.x + 300, main.rect.y + main.rect.height - 115,
+                      main.rect.width - 330, 65)
+        pixels = np.asarray(self.connect().capture(region))
+        return bool((pixels.min(axis=2) >= 220).all())
+
     def message_send(self, chat, text):
         if not isinstance(text, str) or not text.strip() or len(text) > 10000:
             raise AutomationError("INVALID_PARAMS", "text must contain 1–10000 characters")
@@ -1503,7 +1509,7 @@ class Automation:
         editor = self.editor_region(main)
         desktop.click(editor.x + 10, editor.y + 15)
         try:
-            existing = desktop.selected_text()
+            existing = desktop.selected_text(empty_check=lambda: self.draft_empty(main))
         except AutomationError as error:
             raise AutomationError("DRAFT_UNVERIFIED", "Could not verify the existing editor content",
                                   {"cause": error.as_dict()}) from error

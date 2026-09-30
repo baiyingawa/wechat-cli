@@ -534,6 +534,44 @@ class MessageSearchTests(unittest.TestCase):
         desktop.paste.assert_not_called()
         desktop.key.assert_called_once_with("Escape")
 
+    def test_draft_empty_checks_full_width_and_rejects_even_small_text(self):
+        automation = Automation.__new__(Automation)
+        desktop = Mock()
+        automation.connect = Mock(return_value=desktop)
+        main = SimpleNamespace(rect=Rect(0, 0, 3840, 2160))
+        image = Image.new("RGB", (3510, 65), (237, 237, 237))
+        desktop.capture.return_value = image
+        self.assertTrue(automation.draft_empty(main))
+        image.putpixel((3000, 5), (30, 30, 30))
+        self.assertFalse(automation.draft_empty(main))
+        desktop.capture.assert_called_with(Rect(300, 2045, 3510, 65))
+
+    def test_send_keeps_draft_when_copy_fails_and_does_not_submit(self):
+        automation = Automation.__new__(Automation)
+        automation.chat_open = Mock()
+        desktop = Mock()
+        automation.connect = Mock(return_value=desktop)
+        desktop.main_window.return_value = SimpleNamespace(rect=Rect(0, 0, 3840, 2160))
+        desktop.selected_text.side_effect = AutomationError("TIMEOUT", "copy timeout")
+        with self.assertRaises(AutomationError) as error:
+            automation.message_send("False", "hello")
+        self.assertEqual(error.exception.code, "DRAFT_UNVERIFIED")
+        desktop.paste.assert_not_called()
+        self.assertEqual(desktop.click.call_count, 1)
+
+    def test_send_does_not_submit_when_pasted_draft_cannot_be_verified(self):
+        automation = Automation.__new__(Automation)
+        automation.chat_open = Mock()
+        desktop = Mock()
+        automation.connect = Mock(return_value=desktop)
+        desktop.main_window.return_value = SimpleNamespace(rect=Rect(0, 0, 3840, 2160))
+        desktop.selected_text.side_effect = ["", AutomationError("TIMEOUT", "copy timeout")]
+        with self.assertRaises(AutomationError) as error:
+            automation.message_send("False", "hello")
+        self.assertEqual(error.exception.code, "DRAFT_UNVERIFIED")
+        desktop.paste.assert_called_once_with("hello")
+        self.assertEqual(desktop.click.call_count, 1)
+
     def test_send_reuses_an_exact_matching_draft(self):
         automation = Automation.__new__(Automation)
         automation.config = SimpleNamespace(timeout=0.1)
@@ -1044,6 +1082,69 @@ class VisionTests(unittest.TestCase):
 
 
 class ClipboardTests(unittest.TestCase):
+    def test_selected_text_accepts_empty_only_with_positive_empty_check(self):
+        from wechat_cli.x11 import Desktop
+        desktop = Desktop.__new__(Desktop)
+        desktop.connection = Mock()
+        desktop.key = Mock()
+        desktop.wake = Mock()
+        desktop.claim_clipboard = Mock(return_value=100)
+        desktop.selection_owner_id = Mock(return_value=100)
+        check = Mock(return_value=True)
+        with patch("wechat_cli.x11.subprocess.run") as read:
+            self.assertEqual(desktop.selected_text(empty_check=check), "")
+        check.assert_called_once()
+        read.assert_not_called()
+
+    def test_repeated_selected_text_claims_fresh_clipboard_without_pasting_marker(self):
+        from wechat_cli.x11 import Desktop
+        desktop = Desktop.__new__(Desktop)
+        desktop.connection = Mock()
+        desktop.connection.intern_atom.return_value = 1
+        desktop.display_name = ":99"
+        desktop.key = Mock()
+        desktop.wake = Mock()
+        desktop.claim_clipboard = Mock(side_effect=[100, 101])
+        desktop.selection_owner_id = Mock(return_value=200)
+        copied = SimpleNamespace(returncode=0, stdout=b"existing draft")
+        with patch("wechat_cli.x11.subprocess.run", return_value=copied):
+            self.assertEqual(desktop.selected_text(), "existing draft")
+            self.assertEqual(desktop.selected_text(), "existing draft")
+        markers = [called.args[0] for called in desktop.claim_clipboard.call_args_list]
+        self.assertNotEqual(markers[0], markers[1])
+        self.assertEqual([called.args[0] for called in desktop.key.call_args_list],
+                         ["Control_L+a", "Control_L+c", "Control_L+a", "Control_L+c"])
+
+    def test_selected_text_does_not_read_stale_clipboard_on_copy_timeout(self):
+        from wechat_cli.x11 import Desktop
+        desktop = Desktop.__new__(Desktop)
+        desktop.connection = Mock()
+        desktop.key = Mock()
+        desktop.wake = Mock()
+        desktop.claim_clipboard = Mock(return_value=100)
+        desktop.selection_owner_id = Mock(return_value=100)
+        with patch("wechat_cli.x11.wait_until", side_effect=AutomationError("TIMEOUT", "copy timeout")), \
+             patch("wechat_cli.x11.subprocess.run") as read:
+            with self.assertRaises(AutomationError):
+                desktop.selected_text()
+        read.assert_not_called()
+
+    def test_selected_text_rejects_unchanged_marker_even_if_owner_changes(self):
+        from wechat_cli.x11 import Desktop
+        desktop = Desktop.__new__(Desktop)
+        desktop.connection = Mock()
+        desktop.display_name = ":99"
+        desktop.key = Mock()
+        desktop.wake = Mock()
+        desktop.claim_clipboard = Mock(return_value=100)
+        desktop.selection_owner_id = Mock(return_value=200)
+        copied = SimpleNamespace(returncode=0, stdout=b"wechat-cli-copy-fixed-marker")
+        with patch("wechat_cli.x11.uuid.uuid4", return_value="fixed-marker"), \
+             patch("wechat_cli.x11.subprocess.run", return_value=copied):
+            with self.assertRaises(AutomationError) as error:
+                desktop.selected_text()
+        self.assertEqual(error.exception.code, "CLIPBOARD_MISMATCH")
+
     def test_no_selection_owner_is_integer_zero(self):
         from wechat_cli.x11 import Desktop
         desktop = Desktop.__new__(Desktop)

@@ -3,6 +3,7 @@ import os
 import select
 import subprocess
 import time
+import uuid
 from dataclasses import asdict, dataclass
 
 from PIL import Image
@@ -263,7 +264,7 @@ class Desktop:
             xtest.fake_input(self.connection, X.KeyRelease, detail=keycode)
         self.connection.sync()
 
-    def paste(self, text):
+    def claim_clipboard(self, text):
         self.check_pointer()
         data = text.encode("utf-8")
         clipboard_atom = self.connection.intern_atom("CLIPBOARD")
@@ -287,15 +288,29 @@ class Desktop:
         if check.returncode or check.stdout != data:
             raise AutomationError("CLIPBOARD_MISMATCH", "Clipboard did not retain requested text")
         self.clipboard_data = data
+        return self.selection_owner_id(clipboard_atom)
+
+    def paste(self, text):
+        self.claim_clipboard(text)
         self.key("Control_L+v")
 
-    def selected_text(self):
+    def selected_text(self, empty_check=None):
         clipboard_atom = self.connection.intern_atom("CLIPBOARD")
-        previous_owner = self.selection_owner_id(clipboard_atom)
+        marker = f"wechat-cli-copy-{uuid.uuid4()}"
+        previous_owner = self.claim_clipboard(marker)
         self.key("Control_L+a")
         self.key("Control_L+c")
-        wait_until(lambda: self.selection_owner_id(clipboard_atom) not in (0, previous_owner),
-                   self.wake, 1, "selected text clipboard owner")
+
+        def copied_or_empty():
+            if self.selection_owner_id(clipboard_atom) not in (0, previous_owner):
+                return "copied"
+            if empty_check is not None and empty_check():
+                return "empty"
+            return None
+
+        outcome = wait_until(copied_or_empty, self.wake, 1, "selected text clipboard owner").value
+        if outcome == "empty":
+            return ""
         try:
             copied = subprocess.run(["xclip", "-selection", "clipboard", "-out", "-t", "UTF8_STRING"],
                                     capture_output=True, env={**os.environ, "DISPLAY": self.display_name}, timeout=2)
@@ -303,7 +318,10 @@ class Desktop:
             raise AutomationError("CLIPBOARD_UNAVAILABLE", str(error)) from error
         if copied.returncode:
             raise AutomationError("CLIPBOARD_UNAVAILABLE", "Could not copy selected text")
-        return copied.stdout.decode("utf-8")
+        text = copied.stdout.decode("utf-8")
+        if text == marker:
+            raise AutomationError("CLIPBOARD_MISMATCH", "Copy did not replace the clipboard verification marker")
+        return text
 
     def selection_owner_id(self, atom):
         owner = self.connection.get_selection_owner(atom)
