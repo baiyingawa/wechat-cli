@@ -129,6 +129,34 @@ class SessionStatusTests(unittest.TestCase):
             self.automation.prepare()
         self.assertEqual(error.exception.code, "LOGIN_REQUIRED")
 
+    def test_login_clicks_unique_enter_wechat_button(self):
+        automation = Automation.__new__(Automation)
+        automation.config = SimpleNamespace(timeout=0.1)
+        desktop = Mock()
+        window = SimpleNamespace(id=1, rect=Rect(0, 0, 900, 900))
+        desktop.main_window.return_value = window
+        desktop.capture.return_value = Image.new("RGB", (300, 360), "white")
+        automation.connect = Mock(return_value=desktop)
+        automation.session_status = Mock(side_effect=[
+            {"state": "login_required", "window": {"id": 1}},
+            {"state": "login_required", "window": {"id": 1}},
+        ])
+        automation.ocr = Mock()
+        automation.ocr.lines.return_value = [{"text": "进入微信", "rect": [100, 120, 80, 30]}]
+        automation.semantic_wait = Mock(return_value=True)
+        automation.login_artifacts = Mock(return_value={"screenshot": {}, "qr": None})
+
+        result = automation.session_login()
+
+        self.assertEqual(result["login_action"], "requested")
+        desktop.click.assert_called_once_with(70, 67)
+
+    def test_login_falls_back_to_one_large_green_primary_button(self):
+        image = Image.new("RGB", (292, 396), "white")
+        image.paste((7, 193, 96), (52, 281, 240, 319))
+        button = Automation.login_primary_button(image)
+        self.assertEqual(button, Rect(52, 281, 188, 38))
+
     def test_history_management_reports_local_only_scope(self):
         self.automation.config = SimpleNamespace(display=":99", retention_days=15)
         result = self.automation.history_manage()
@@ -285,6 +313,70 @@ class LayoutTests(unittest.TestCase):
         result = automation.visible_chat_row(main, "False")
         self.assertEqual(result["rect"], [3, 223, 197, 45])
         self.assertEqual(result["region"], Rect(70, 74, 210, 2080))
+
+    def test_chat_open_uses_search_clear_paste_enter_without_result_ocr(self):
+        automation = Automation.__new__(Automation)
+        automation.config = SimpleNamespace(timeout=0.1)
+        main = SimpleNamespace(rect=Rect(0, 0, 1200, 900))
+        desktop = Mock()
+        desktop.selected_text.return_value = "False"
+        automation.prepare = Mock(return_value=main)
+        automation.connect = Mock(return_value=desktop)
+        automation.select_sidebar_tab = Mock()
+        automation.global_search_box = Mock(return_value=Rect(42, 14, 90, 24))
+        automation.current_chat = Mock(return_value="Other")
+        automation.composer_visible = Mock(return_value=True)
+        automation.semantic_wait = Mock(return_value=True)
+
+        result = automation.chat_open("False")
+
+        self.assertEqual(result["matched_by"], "search_enter_and_header")
+        desktop.click.assert_called_once_with(87, 26)
+        self.assertEqual([call.args[0] for call in desktop.key.call_args_list],
+                         ["Control_L+a", "BackSpace", "Return"])
+        desktop.paste.assert_called_once_with("False")
+        desktop.changed.assert_not_called()
+        self.assertEqual(automation.semantic_wait.call_args_list[0].args[2],
+                         "first search result highlight")
+
+    def test_chat_open_does_not_press_enter_when_input_verification_fails(self):
+        automation = Automation.__new__(Automation)
+        automation.config = SimpleNamespace(timeout=0.1)
+        main = SimpleNamespace(rect=Rect(0, 0, 1200, 900))
+        desktop = Mock()
+        desktop.selected_text.return_value = "wrong query"
+        automation.prepare = Mock(return_value=main)
+        automation.connect = Mock(return_value=desktop)
+        automation.select_sidebar_tab = Mock()
+        automation.global_search_box = Mock(return_value=Rect(42, 14, 90, 24))
+        automation.current_chat = Mock(return_value="Other")
+        automation.semantic_wait = Mock()
+
+        with self.assertRaises(AutomationError) as error:
+            automation.chat_open("False")
+
+        self.assertEqual(error.exception.code, "SEARCH_UNVERIFIED")
+        self.assertNotIn("Return", [called.args[0] for called in desktop.key.call_args_list])
+        automation.semantic_wait.assert_not_called()
+
+    def test_search_result_readiness_detects_green_text_not_white_background(self):
+        image = Image.new("RGB", (150, 58), "white")
+        self.assertFalse(Automation.search_result_ready(image))
+        image.paste((0, 180, 80), (5, 10, 15, 20))
+        self.assertTrue(Automation.search_result_ready(image))
+
+    def test_global_search_box_uses_ocr_label_location(self):
+        automation = Automation.__new__(Automation)
+        desktop = Mock()
+        desktop.capture.return_value = Image.new("RGB", (260, 64), "white")
+        automation.connect = Mock(return_value=desktop)
+        automation.ocr = Mock()
+        automation.ocr.lines.return_value = [{"text": "搜 索", "rect": [295, 120, 89, 62]}]
+        main = SimpleNamespace(rect=Rect(0, 0, 3840, 2160))
+
+        result = automation.global_search_box(main)
+
+        self.assertEqual(result, Rect(105, 38, 22, 15))
 
     def test_moments_like_wrapper_selects_desired_state(self):
         automation = Automation.__new__(Automation)

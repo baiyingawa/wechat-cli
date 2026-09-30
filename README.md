@@ -23,7 +23,7 @@ wechat-cli call session.start
 wechat-cli call session.login
 ```
 
-如果发行版要求使用虚拟环境安装 `pip` 包，请先激活虚拟环境。需要时，`session.login` 会点击可见的原生登录按钮，并在等待手机扫码确认时返回本地截图路径；请在本机显示该图片后扫码确认，工具**不会**绕过登录。登录一次后再执行其他操作。WSL 环境请在目标 WSL 发行版中运行这些命令；可使用 `wslpath -w '/path/returned/by/session.login.png'` 在 Windows 中打开 WSL 截图。
+如果发行版要求使用虚拟环境安装 `pip` 包，请先激活虚拟环境。需要时，`session.login` 会点击唯一可见的“登录”或“进入微信”按钮，并在等待手机扫码确认时返回本地截图路径；请在本机显示该图片后扫码确认，工具**不会**绕过登录。登录一次后再执行其他操作。WSL 环境请在目标 WSL 发行版中运行这些命令；可使用 `wslpath -w '/path/returned/by/session.login.png'` 在 Windows 中打开 WSL 截图。
 
 `session.start` 会复用可访问的显示屏和已有客户端，不会删除其他 WSL 发行版。默认分辨率为 3840x2160，可用 `WECHAT_WIDTH` 与 `WECHAT_HEIGHT` 修改。`WECHAT_TIMEOUT` 控制语义化界面等待，`WECHAT_RETENTION_DAYS` 默认值为 15。窗口较小时可使用 `wechat-cli doctor` 与 `wechat-cli call ui.maximize`。本地 Unix socket 服务独占桌面自动化；CLI 命令会按需启动它。`wechat-cli service stop` 只停止自动化服务，**不会**停止微信或 Xvfb 显示屏。
 
@@ -135,6 +135,8 @@ wechat-cli stdio
 破坏性方法使用两次调用确认。第一次调用附带 `idempotency_key`；`CONFIRMATION_REQUIRED` 错误会返回一个 120 秒有效且只能使用一次的 `confirm_token`。使用完全相同的方法、参数和键，并附带 `--confirm-token` 重复调用。`message.delete` 与 `group.leave` 还会在点击前验证原生确认对话框。若“清空聊天记录”已被选中，退群操作会拒绝继续。
 
 聊天和群参数必须与可见标题完全一致。后续群操作请使用 `group.create` 返回的 `chat` 值（包括成员数后缀）；这样可避免将 `False (2)` 这样的群误认为名为 `False` 的单聊。
+
+打开聊天采用“点击搜索框、全选清空、输入名称、回车”的顺序。输入通过剪贴板校验；回车前以小区域像素检测确认搜索命中高亮已经出现，进入后再验证聊天标题和编辑区。不会因输入框刚变动就误判搜索结果已加载，也不依赖 OCR 定位搜索结果来点击。
 
 `message.read` 默认读取当前最大化聊天窗口内尽可能多的可见气泡。指定 `limit`（1-30）会向上滚动、合并重叠视觉页面，最多返回该数量的最近检测消息。当内容或视口变化时，识别可能漏掉或重复消息。`state.cleanup` 会删除超过 15 天的本地截图和日志，并会在服务启动时自动运行；它**不会**删除聊天或其他账号数据。
 

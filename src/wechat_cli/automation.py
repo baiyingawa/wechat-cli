@@ -12,7 +12,7 @@ from .accessibility import Accessibility
 from .errors import AutomationError
 from .ocr import OCR, RapidOCRReader
 from .vision import (adjacent_bubble, avatar_template_match, bubble_regions, editor_has_content,
-                     image_digest, merge_message_pages, text_identity)
+                     image_digest, merge_message_pages, runs, text_identity)
 from .wait import wait_until
 from .x11 import Desktop, Rect
 
@@ -194,20 +194,26 @@ class Automation:
         if status["state"] == "login_required":
             desktop = self.connect()
             main = desktop.main_window()
-            center = Rect(main.rect.x + main.rect.width // 3,
-                          main.rect.y + main.rect.height // 5,
-                          main.rect.width // 3, main.rect.height * 2 // 5)
-            image = desktop.capture(center)
-            lines = self.ocr.lines(image.resize((image.width * 2, image.height * 2)), 11)
+            image = desktop.capture(main.rect)
+            lines = self.ocr.lines(image.resize((image.width * 2, image.height * 2)), 12)
             labels = [(line["text"].replace(" ", ""), line) for line in lines]
-            buttons = [line for label, line in labels if label == "登录"]
+            buttons = [line for label, line in labels if label in ("登录", "进入微信")]
             if len(buttons) == 1:
                 left, top, width, height = buttons[0]["rect"]
                 before = image_digest(image)
-                desktop.click(center.x + (left + width // 2) // 2,
-                              center.y + (top + height // 2) // 2)
+                desktop.click(main.rect.x + (left + width // 2) // 2,
+                              main.rect.y + (top + height // 2) // 2)
+            else:
+                button = self.login_primary_button(image)
+                if button is not None:
+                    before = image_digest(image)
+                    desktop.click(main.rect.x + button.x + button.width // 2,
+                                  main.rect.y + button.y + button.height // 2)
+                else:
+                    before = None
+            if before is not None:
                 try:
-                    self.semantic_wait(center, lambda current: image_digest(current) != before,
+                    self.semantic_wait(main.rect, lambda current: image_digest(current) != before,
                                        "login prompt response", timeout=min(2, self.config.timeout))
                 except AutomationError as error:
                     if error.code != "TIMEOUT":
@@ -218,6 +224,24 @@ class Automation:
             status = self.session_status()
         artifacts = self.login_artifacts(status["window"]["id"]) if status["state"] == "login_required" else {}
         return {**status, "login_action": action, **artifacts}
+
+    @staticmethod
+    def login_primary_button(image):
+        pixels = np.asarray(image, dtype=np.int16)
+        green = ((pixels[:, :, 1] > pixels[:, :, 0] + 35)
+                 & (pixels[:, :, 1] > pixels[:, :, 2] + 10)
+                 & (pixels[:, :, 1] > 120))
+        rows = runs(green.sum(axis=1) >= image.width * 0.35, minimum=max(12, image.height // 30))
+        candidates = []
+        for top, bottom in rows:
+            columns = runs(green[top:bottom].mean(axis=0) >= 0.35, minimum=max(40, image.width // 4))
+            candidates.extend(Rect(left, top, right - left, bottom - top) for left, right in columns)
+        if len(candidates) != 1:
+            return None
+        button = candidates[0]
+        if button.y < image.height * 0.35:
+            return None
+        return button
 
     @staticmethod
     def qr_rect_from_points(points, width, height):
@@ -463,6 +487,19 @@ class Automation:
             desktop.click(main.rect.x + 32, main.rect.y + offset_y)
             wait_until(selected, desktop.wake, self.config.timeout, "sidebar tab")
 
+    def global_search_box(self, main):
+        region = Rect(main.rect.x + 32, main.rect.y + 8,
+                      min(260, main.rect.width - 32), min(64, main.rect.height - 8))
+        image = self.connect().capture(region)
+        scale = 4
+        rows = self.ocr.lines(image.resize((image.width * scale, image.height * scale)), psm=11)
+        labels = [row for row in rows if text_identity(row["text"]) in ("搜索", "Search")]
+        if len(labels) == 1:
+            left, top, width, height = labels[0]["rect"]
+            return Rect(region.x + left // scale, region.y + top // scale,
+                        max(1, width // scale), max(1, height // scale))
+        return Rect(main.rect.x + 42, main.rect.y + 14, 90, 24)
+
     def chat_open(self, chat):
         if not isinstance(chat, str) or not chat.strip():
             raise AutomationError("INVALID_PARAMS", "chat must be a nonempty display name")
@@ -474,60 +511,19 @@ class Automation:
         if self.chat_header_matches(self.current_chat(main), chat) and self.composer_visible(main):
             return {"chat": chat, "matched_by": "verified_header", "already_open": True}
         search_label = self.chat_search_label(chat)
-        visible = self.visible_chat_row(main, search_label)
-        if visible is not None:
-            left, top, width, height = visible["rect"]
-            desktop.click(visible["region"].x + left + width // 2,
-                          visible["region"].y + top + height // 2)
-            try:
-                self.semantic_wait(self.header_region(main),
-                    lambda image: self.chat_header_matches(" ".join(item["text"] for item in
-                        self.ocr.lines(image.resize((image.width * 2, image.height * 2)), 7)), chat),
-                    f"visible conversation header {chat}", timeout=min(2, self.config.timeout))
-                wait_until(lambda: self.composer_visible(main), desktop.wake,
-                           self.config.timeout, "conversation composer")
-                return {"chat": chat, "matched_by": "visible_row_and_header", "already_open": False}
-            except AutomationError as error:
-                if error.code != "TIMEOUT":
-                    raise
-                desktop.key("Escape")
-        search = Rect(main.rect.x + 80, main.rect.y + 28, 155, 32)
-        before = desktop.fingerprint(search)
-        desktop.click(search.x + 55, search.y + 15)
+        search = self.global_search_box(main)
+        results = Rect(main.rect.x + 120, main.rect.y + 94, 150, 58)
+        desktop.click(search.x + search.width // 2, search.y + search.height // 2)
         desktop.key("Control_L+a")
-        desktop.paste(chat)
-        desktop.changed(search, before, self.config.timeout)
-        results = Rect(main.rect.x + 70, main.rect.y + 72, 210,
-                       min(800, main.rect.height - 250))
-
-        def matching_result(image):
-            pixels = np.asarray(image.crop((20, 22, 200, min(500, image.height))), dtype=np.int16)
-            green = (pixels[:, :, 1] > pixels[:, :, 0] + 25) & (pixels[:, :, 1] > pixels[:, :, 2] + 10)
-            highlighted = self.ocr.lines(Image.fromarray(np.where(green, 0, 255).astype(np.uint8))
-                                         .resize((810, pixels.shape[0] * 3)), psm=11)
-            direct = [line for line in highlighted
-                      if text_identity(line["text"]) == search_label]
-            if len(direct) > 1 and direct[0]["rect"][1] < 300:
-                direct = direct[:1]
-            if len(direct) == 1:
-                left, top, width, height = direct[0]["rect"]
-                return {"rect": [20 + left // 3, 22 + top // 3,
-                                 max(1, width // 3), max(1, height // 3)]}
-            enlarged = image.resize((image.width * 2, image.height * 2))
-            lines = self.ocr.lines(enlarged, psm=11)
-            matches = [line for line in lines if text_identity(line["text"]) == search_label]
-            if len(matches) > 1:
-                raise AutomationError("AMBIGUOUS_TARGET", "Multiple matching results",
-                                      {"chat": chat, "matches": matches})
-            if not matches:
-                return None
-            left, top, width, height = matches[0]["rect"]
-            return {"rect": [left // 2, top // 2, max(1, width // 2), max(1, height // 2)]}
-
-        target = self.semantic_wait(results, matching_result, f"search result for {chat}")
-        left, top, width, height = target["rect"]
-        desktop.click(results.x + left + width // 2, results.y + top + height // 2)
+        desktop.key("BackSpace")
+        desktop.paste(search_label)
+        if desktop.selected_text() != search_label:
+            desktop.key("Escape")
+            raise AutomationError("SEARCH_UNVERIFIED", "Search input differs from requested chat",
+                                  {"chat": chat})
         try:
+            self.semantic_wait(results, self.search_result_ready, "first search result highlight")
+            desktop.key("Return")
             self.semantic_wait(self.header_region(main),
                 lambda image: self.chat_header_matches(" ".join(item["text"] for item in
                     self.ocr.lines(image.resize((image.width * 2, image.height * 2)), 7)), chat),
@@ -536,9 +532,17 @@ class Automation:
                        self.config.timeout, "conversation composer")
         except AutomationError as error:
             desktop.key("Escape")
-            raise AutomationError("CHAT_OPEN_UNVERIFIED", "Search selection did not open the requested chat",
+            raise AutomationError("CHAT_OPEN_UNVERIFIED", "Search Enter did not open the requested chat",
                                   {"chat": chat, "cause": error.as_dict()}) from error
-        return {"chat": chat, "matched_by": "exact_search_and_header", "already_open": False}
+        return {"chat": chat, "matched_by": "search_enter_and_header", "already_open": False}
+
+    @staticmethod
+    def search_result_ready(image):
+        pixels = np.asarray(image, dtype=np.int16)
+        green = ((pixels[:, :, 1] > pixels[:, :, 0] + 25)
+                 & (pixels[:, :, 1] > pixels[:, :, 2] + 10)
+                 & (pixels[:, :, 1] > 80))
+        return int(green.sum()) >= 5
 
     def visible_chat_row(self, main, chat):
         region = Rect(main.rect.x + 70, main.rect.y + 74, 210, main.rect.height - 80)
