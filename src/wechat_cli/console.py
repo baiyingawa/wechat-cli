@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -13,8 +14,56 @@ from .registry import capabilities
 from . import service
 
 
+STYLES = {
+    "heading": "1;36",
+    "command": "1;36",
+    "success": "1;32",
+    "error": "1;31",
+    "warning": "1;33",
+    "link": "4;36",
+    "muted": "2",
+    "key": "36",
+    "string": "32",
+    "number": "33",
+}
+
+
+def colors_enabled(stream=None):
+    stream = sys.stdout if stream is None else stream
+    return ("NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+            and getattr(stream, "isatty", lambda: False)())
+
+
+def styled(text, role, stream=None):
+    if not colors_enabled(stream):
+        return text
+    return f"\033[{STYLES[role]}m{text}\033[0m"
+
+
+def print_error(text):
+    print(styled(text, "error", sys.stderr), file=sys.stderr)
+
+
 def print_json(value):
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+    output = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    if not colors_enabled():
+        print(output)
+        return
+
+    def highlight(match):
+        token = match.group()
+        if token.startswith('"'):
+            if match.lastgroup == "key":
+                role = "heading" if token in ('"ok"', '"error"', '"result"') else "key"
+            else:
+                role = "string"
+        else:
+            role = {"true": "success", "false": "error", "null": "muted"}.get(token, "number")
+        return f"\033[{STYLES[role]}m{token}\033[0m"
+
+    print(re.sub(r'(?P<key>"(?:[^"\\]|\\.)*")(?=\s*:)|"(?:[^"\\]|\\.)*"'
+                 r'|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?',
+                 highlight, output))
 
 
 def qr_terminal_art(path, columns=48):
@@ -28,7 +77,7 @@ def qr_terminal_art(path, columns=48):
 
 
 def run_login(config, methods):
-    print("正在启动并识别登录界面；扫码后会自动检测登录完成。按 Ctrl-C 返回控制台。")
+    print(styled("正在启动并识别登录界面；扫码后会自动检测登录完成。按 Ctrl-C 返回控制台。", "warning"))
     last_qr_digest = None
     screenshot_printed = False
     while True:
@@ -39,16 +88,16 @@ def run_login(config, methods):
             return
         result = response["result"]
         if result["state"] == "logged_in":
-            print("登录完成。")
+            print(styled("登录完成。", "success"))
             return
         screenshot = result.get("screenshot")
         qr = result.get("qr")
         if qr and qr["digest"] != last_qr_digest:
-            print(f"二维码截图：{qr['path']}")
+            print("二维码截图：" + styled(qr["path"], "link"))
             print(qr_terminal_art(qr["path"]))
             last_qr_digest = qr["digest"]
         elif screenshot and not screenshot_printed:
-            print(f"登录界面截图：{screenshot['path']}")
+            print("登录界面截图：" + styled(screenshot["path"], "link"))
             screenshot_printed = True
         time.sleep(0.5)
 
@@ -60,21 +109,25 @@ def print_help(method_name=None):
     else:
         selected = []
     if method_name and not selected:
-        print(f"Unknown method: {method_name}", file=sys.stderr)
+        print_error(f"Unknown method: {method_name}")
         return
     if not method_name:
-        print("Common commands:")
-        print("  /start | /login | /logout             Start WeChat; auto-click login and show QR; log out")
-        print("  /status | /maximize | /reset          Check session, maximize, or restore chat view")
-        print("  /gui on|off | /remote                 Toggle Windows VNC access or show remote VNC details")
-        print("  /chat CHAT TEXT                        Send a message, e.g. /chat False 111")
-        print("  /open CHAT | /read CHAT [LIMIT]        Open a chat or read up to 30 messages")
-        print("  /find CHAT TEXT | /recall CHAT TEXT    Search recent messages or recall one")
-        print("  /contact CHAT | /pat CHAT [self|other] Read contact details or pat an avatar")
-        print("  /moments CHAT | /like CHAT POST        Open Moments or like a text post")
-        print("  /unlike CHAT POST | /feed              Remove a like or open the Moments feed")
-        print("  /url | /doctor | /mcp | /exit")
-        print("Use /methods to list advanced APIs, or /help METHOD for its parameters.")
+        print(styled("Common commands:", "heading"))
+        commands = [
+            ("/start | /login | /logout", "Start WeChat; auto-click login and show QR; log out"),
+            ("/status | /maximize | /reset", "Check session, maximize, or restore chat view"),
+            ("/gui on|off | /remote", "Toggle Windows VNC access or show remote VNC details"),
+            ("/chat CHAT TEXT", "Send a message, e.g. /chat False 111"),
+            ("/open CHAT | /read CHAT [LIMIT]", "Open a chat or read up to 30 messages"),
+            ("/find CHAT TEXT | /recall CHAT TEXT", "Search recent messages or recall one"),
+            ("/contact CHAT | /pat CHAT [self|other]", "Read contact details or pat an avatar"),
+            ("/moments CHAT | /like CHAT POST", "Open Moments or like a text post"),
+            ("/unlike CHAT POST | /feed", "Remove a like or open the Moments feed"),
+            ("/url | /doctor | /mcp | /exit", ""),
+        ]
+        for usage, description in commands:
+            print(f"  {styled(usage, 'command')}{' ' * max(2, 40 - len(usage))}{description}".rstrip())
+        print(styled("Use /methods to list advanced APIs, or /help METHOD for its parameters.", "muted"))
         return
     for item in selected:
         schema = item.get("params_schema", {})
@@ -90,7 +143,7 @@ def print_help(method_name=None):
         if item.get("destructive"):
             flags.append("confirm")
         suffix = f"; flags: {', '.join(flags)}" if flags else ""
-        print(f"{item['method']}: {item.get('description', '')}")
+        print(f"{styled(item['method'], 'command')}: {item.get('description', '')}")
         print(f"  required: {required}; parameters: {parameters}{suffix}")
 
 
@@ -102,7 +155,7 @@ def build_request(method, params, methods, key=None, confirm=None):
     metadata = methods[method]
     if metadata.get("idempotency_required") and not key:
         key = f"console-{uuid.uuid4()}"
-        print(f"Generated idempotency key: {key}", file=sys.stderr)
+        print(styled(f"Generated idempotency key: {key}", "muted", sys.stderr), file=sys.stderr)
     request = {"id": f"console-{uuid.uuid4()}", "method": method, "params": params}
     if key:
         request["idempotency_key"] = key
@@ -204,12 +257,12 @@ def main():
     metadata = capabilities()["methods"]
     methods = {item["method"]: item for item in metadata if item["status"] == "implemented"}
     port = os.environ.get("WECHAT_DEMO_PORT", "8765")
-    print("wechatcli console")
-    print(f"Operation URL: http://127.0.0.1:{port}")
-    print("Use /help to list WeChat commands. Services remain running after /exit.\n")
+    print(styled("wechatcli console", "heading"))
+    print("Operation URL: " + styled(f"http://127.0.0.1:{port}", "link"))
+    print(styled("Use /help to list WeChat commands. Services remain running after /exit.", "muted") + "\n")
     while True:
         try:
-            line = input("wechatcli> ").strip()
+            line = input(styled("wechatcli> ", "command")).strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return
@@ -218,7 +271,7 @@ def main():
         try:
             tokens = shlex.split(line)
         except ValueError as error:
-            print(f"Input error: {error}", file=sys.stderr)
+            print_error(f"Input error: {error}")
             continue
         command, *rest = tokens
         if command in ("/exit", "/quit"):
@@ -229,10 +282,10 @@ def main():
         if command == "/methods":
             prefix = rest[0] if rest else ""
             for name in sorted(name for name in methods if name.startswith(prefix)):
-                print(name)
+                print(styled(name, "command"))
             continue
         if command == "/url":
-            print(f"http://127.0.0.1:{port}")
+            print(styled(f"http://127.0.0.1:{port}", "link"))
             continue
         if command in ("/status", "/doctor"):
             method = "session.status" if command == "/status" else "doctor"
@@ -240,18 +293,18 @@ def main():
             continue
         if command == "/login":
             if rest:
-                print("Error: Usage: /login", file=sys.stderr)
+                print_error("Error: Usage: /login")
                 continue
             try:
                 run_login(config, methods)
             except KeyboardInterrupt:
-                print("\n已停止等待登录。")
+                print("\n" + styled("已停止等待登录。", "warning"))
             except AutomationError as error:
-                print(f"Error: {error}", file=sys.stderr)
+                print_error(f"Error: {error}")
             continue
         if command == "/mcp":
-            print("MCP launcher: mcp.sh")
-            print("Windows launcher: mcp-wsl.bat")
+            print("MCP launcher: " + styled("mcp.sh", "command"))
+            print("Windows launcher: " + styled("mcp-wsl.bat", "command"))
             continue
         try:
             request = parse_shortcut(command, rest, methods)
@@ -259,7 +312,7 @@ def main():
                 request = parse_invocation(rest if command == "/call" else tokens, methods)
             print_json(service.call(config, request))
         except (AutomationError, ValueError) as error:
-            print(f"Error: {error}", file=sys.stderr)
+            print_error(f"Error: {error}")
 
 
 if __name__ == "__main__":

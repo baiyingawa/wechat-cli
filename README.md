@@ -66,6 +66,8 @@ Windows 中运行 `start-wsl.bat` 会打开标题为 `wechatcli` 的命令行窗
 
 在交互终端中运行时，`start.sh` 会在服务就绪后打开 `wechatcli>` 控制台。使用 `/help` 查看常用短命令，`/exit` 关闭控制台但不停止服务。`/login` 会按需启动客户端、自动点击唯一识别出的“登录”按钮、保存登录界面与检测到的二维码截图，并在二维码变化时刷新字符预览；扫码后会自动检测登录完成，按 `Ctrl-C` 可停止等待。会话命令还包括 `/start`、`/logout`、`/status`、`/maximize`、`/reset`、`/gui on|off` 与 `/remote`；消息命令例如 `/chat False 111`、`/read False 30`、`/find False keyword`、`/recall False 111`。`/like False post_text` 可点赞，`/feed` 打开全局朋友圈。使用 `/methods` 查看底层能力名称，使用 `/help METHOD` 查看指定能力参数；完整能力仍可通过 `/call METHOD JSON_PARAMS` 或 `METHOD JSON_PARAMS` 调用。无人值守启动时设置 `WECHAT_NO_CONSOLE=1`。Demo 仅绑定 localhost，其他局域网设备无法访问。
 
+控制台在终端中自动启用颜色与加粗：命令和提示符为青色，成功状态为绿色，错误为红色，登录等待提示为黄色，操作网址带下划线，JSON 结果按字段和值高亮。重定向或管道输出保持纯文本，CLI 的机器接口和 MCP 输出格式不变。设置 `NO_COLOR=1` 可关闭颜色与加粗（例如 `NO_COLOR=1 ./console.sh`）；`TERM=dumb` 也会关闭样式。二维码字符预览保持原样。
+
 在 WSL 中运行 `stop-all.sh` 可停止本项目中由宿主启动的 MCP 进程、Demo、自动化服务、VNC、微信、Openbox 及 Xvfb 显示屏。Windows 中运行 `stop.all-wsl.bat` 会调用该脚本，然后执行 `wsl --shutdown`，这会停止全部 WSL 发行版。
 
 ### 本地 Demo

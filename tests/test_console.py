@@ -1,11 +1,78 @@
+import io
+import json
+import os
+import re
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
 from wechat_cli.automation import Automation
-from wechat_cli.console import parse_shortcut, qr_terminal_art
+from wechat_cli.console import main, parse_shortcut, print_error, print_help, print_json, qr_terminal_art, styled
 from wechat_cli.registry import capabilities
+
+
+class TerminalOutput(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class ConsoleStyleTests(unittest.TestCase):
+    def setUp(self):
+        environment = patch.dict(os.environ, {}, clear=False)
+        environment.start()
+        self.addCleanup(environment.stop)
+        os.environ.pop("NO_COLOR", None)
+        os.environ["TERM"] = "xterm-256color"
+
+    def test_terminal_styles_are_bold_and_reset(self):
+        self.assertEqual(styled("wechatcli> ", "command", TerminalOutput()),
+                         "\033[1;36mwechatcli> \033[0m")
+
+    def test_redirected_output_has_no_escape_codes(self):
+        self.assertEqual(styled("plain", "error", io.StringIO()), "plain")
+
+    def test_no_color_and_dumb_terminal_disable_styles(self):
+        with patch.dict(os.environ, {"NO_COLOR": ""}):
+            self.assertEqual(styled("plain", "heading", TerminalOutput()), "plain")
+        with patch.dict(os.environ, {"TERM": "dumb"}):
+            self.assertEqual(styled("plain", "heading", TerminalOutput()), "plain")
+
+    def test_json_styles_preserve_escaped_strings_and_values(self):
+        response = {"ok": False, "error": {"code": "TIMEOUT", "message": '中文 "true" \\ 123'},
+                    "elapsed_ms": -12.5, "result": None}
+        terminal = TerminalOutput()
+        with patch("sys.stdout", terminal):
+            print_json(response)
+        output = terminal.getvalue()
+        self.assertIn("\033[1;31mfalse\033[0m", output)
+        plain = re.sub(r"\033\[[0-9;]*m", "", output)
+        self.assertEqual(json.loads(plain), response)
+        self.assertEqual(plain, json.dumps(response, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+        redirected = io.StringIO()
+        with patch("sys.stdout", redirected):
+            print_json(response)
+        self.assertEqual(redirected.getvalue(), plain)
+
+    def test_help_and_errors_use_their_own_output_stream(self):
+        terminal = TerminalOutput()
+        redirected = io.StringIO()
+        with patch("sys.stdout", terminal), patch("sys.stderr", redirected):
+            print_help()
+            print_error("Error: example")
+        self.assertIn("\033[1;36m/chat CHAT TEXT\033[0m", terminal.getvalue())
+        self.assertEqual(redirected.getvalue(), "Error: example\n")
+        with patch("sys.stderr", terminal):
+            print_error("Error: example")
+        self.assertIn("\033[1;31mError: example\033[0m", terminal.getvalue())
+
+    def test_console_startup_and_prompt_are_styled(self):
+        terminal = TerminalOutput()
+        with patch("sys.stdout", terminal), patch("builtins.input", return_value="/exit") as read_input:
+            main()
+        read_input.assert_called_once_with("\033[1;36mwechatcli> \033[0m")
+        self.assertIn("\033[1;36mwechatcli console\033[0m", terminal.getvalue())
 
 
 class ConsoleShortcutTests(unittest.TestCase):
