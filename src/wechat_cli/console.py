@@ -26,6 +26,13 @@ def print_help(method_name=None):
     print("  METHOD JSON [--key KEY] [--confirm TOKEN]")
     print("  /call METHOD JSON [--key KEY] [--confirm TOKEN]")
     print("  /url | /status | /doctor | /mcp | /exit")
+    print("Human-friendly shortcuts:")
+    print("  /chat CHAT TEXT                        Send a message, e.g. /chat False 111")
+    print("  /open CHAT | /read CHAT [LIMIT]        Open a chat or read up to 30 messages")
+    print("  /find CHAT TEXT | /recall CHAT TEXT    Search recent messages or recall one")
+    print("  /contact CHAT | /pat CHAT [self|other] Read contact details or pat an avatar")
+    print("  /moments CHAT | /like CHAT POST        Open Moments or like a text post")
+    print("  /unlike CHAT POST | /feed              Remove a like or open the Moments feed")
     print("JSON containing spaces must be quoted. Example:")
     print("  message.read '{\"chat\":\"False\",\"limit\":30}'")
     print("  message.send '{\"chat\":\"False\",\"text\":\"111111\"}' --key send-false-001")
@@ -49,18 +56,31 @@ def print_help(method_name=None):
         print(f"  required: {required}; parameters: {parameters}{suffix}")
 
 
+def build_request(method, params, methods, key=None, confirm=None):
+    if method not in methods:
+        raise ValueError(f"Unknown method: {method}. Use /help.")
+    if not isinstance(params, dict):
+        raise ValueError("Parameters must be an object")
+    metadata = methods[method]
+    if metadata.get("idempotency_required") and not key:
+        key = f"console-{uuid.uuid4()}"
+        print(f"Generated idempotency key: {key}", file=sys.stderr)
+    request = {"id": f"console-{uuid.uuid4()}", "method": method, "params": params}
+    if key:
+        request["idempotency_key"] = key
+    if confirm:
+        request["confirm_token"] = confirm
+    return request
+
+
 def parse_invocation(tokens, methods):
     if len(tokens) < 2:
         raise ValueError("Usage: METHOD JSON [--key KEY] [--confirm TOKEN]")
     method = tokens[0]
-    if method not in methods:
-        raise ValueError(f"Unknown method: {method}. Use /help.")
     try:
         params = json.loads(tokens[1])
     except json.JSONDecodeError as error:
         raise ValueError(f"Invalid JSON parameters: {error.msg}") from error
-    if not isinstance(params, dict):
-        raise ValueError("JSON parameters must be an object")
     key = None
     confirm = None
     index = 2
@@ -75,16 +95,60 @@ def parse_invocation(tokens, methods):
         else:
             confirm = tokens[index + 1]
         index += 2
-    metadata = methods[method]
-    if metadata.get("idempotency_required") and not key:
-        key = f"console-{uuid.uuid4()}"
-        print(f"Generated idempotency key: {key}", file=sys.stderr)
-    request = {"id": f"console-{uuid.uuid4()}", "method": method, "params": params}
-    if key:
-        request["idempotency_key"] = key
-    if confirm:
-        request["confirm_token"] = confirm
-    return request
+    return build_request(method, params, methods, key, confirm)
+
+
+def parse_shortcut(command, tokens, methods):
+    if command == "/chat":
+        if len(tokens) < 2:
+            raise ValueError("Usage: /chat CHAT TEXT")
+        return build_request("message.send", {"chat": tokens[0], "text": " ".join(tokens[1:])}, methods)
+    if command == "/open":
+        if len(tokens) != 1:
+            raise ValueError("Usage: /open CHAT")
+        return build_request("chat.open", {"chat": tokens[0]}, methods)
+    if command == "/read":
+        if not 1 <= len(tokens) <= 2:
+            raise ValueError("Usage: /read CHAT [LIMIT]")
+        params = {"chat": tokens[0]}
+        if len(tokens) == 2:
+            try:
+                params["limit"] = int(tokens[1])
+            except ValueError as error:
+                raise ValueError("LIMIT must be an integer between 1 and 30") from error
+            if not 1 <= params["limit"] <= 30:
+                raise ValueError("LIMIT must be an integer between 1 and 30")
+        return build_request("message.read", params, methods)
+    if command == "/find":
+        if len(tokens) < 2:
+            raise ValueError("Usage: /find CHAT TEXT")
+        return build_request("message.search", {"chat": tokens[0], "query": " ".join(tokens[1:])}, methods)
+    if command == "/recall":
+        if len(tokens) < 2:
+            raise ValueError("Usage: /recall CHAT TEXT")
+        return build_request("message.revoke", {"chat": tokens[0], "text": " ".join(tokens[1:])}, methods)
+    if command == "/contact":
+        if len(tokens) != 1:
+            raise ValueError("Usage: /contact CHAT")
+        return build_request("contact.info", {"chat": tokens[0]}, methods)
+    if command == "/pat":
+        if not 1 <= len(tokens) <= 2:
+            raise ValueError("Usage: /pat CHAT [self|other]")
+        return build_request("message.pat", {"chat": tokens[0], "target": tokens[1] if len(tokens) == 2 else "other"}, methods)
+    if command == "/moments":
+        if len(tokens) != 1:
+            raise ValueError("Usage: /moments CHAT")
+        return build_request("moments.open", {"chat": tokens[0]}, methods)
+    if command in ("/like", "/unlike"):
+        if len(tokens) < 2:
+            raise ValueError(f"Usage: {command} CHAT POST_TEXT")
+        method = "moments.like" if command == "/like" else "moments.unlike"
+        return build_request(method, {"chat": tokens[0], "post_text": " ".join(tokens[1:])}, methods)
+    if command == "/feed":
+        if tokens:
+            raise ValueError("Usage: /feed")
+        return build_request("moments.feed.open", {}, methods)
+    return None
 
 
 def main():
@@ -130,10 +194,10 @@ def main():
             print("MCP launcher: mcp.sh")
             print("Windows launcher: mcp-wsl.bat")
             continue
-        if command == "/call":
-            tokens = rest
         try:
-            request = parse_invocation(tokens, methods)
+            request = parse_shortcut(command, rest, methods)
+            if request is None:
+                request = parse_invocation(rest if command == "/call" else tokens, methods)
             print_json(service.call(config, request))
         except (AutomationError, ValueError) as error:
             print(f"Error: {error}", file=sys.stderr)

@@ -64,7 +64,7 @@ Linux 或已在 WSL 中运行的 MCP 宿主可直接指向 `mcp.sh`：
 
 Windows 中运行 `start-wsl.bat` 会打开标题为 `wechatcli` 的命令行窗口，进入 Windows 默认 WSL 发行版并运行 `start.sh`。脚本开头会输出浏览器控制地址，随后启动 `:99` 微信会话与 `http://127.0.0.1:8765` 的本地 Demo，并校验 MCP 启动器。可在运行任一批处理文件前设置 `WECHAT_CLI_WSL_DISTRO` 选择特定发行版。
 
-在交互终端中运行时，`start.sh` 会在服务就绪后打开 `wechatcli>` 控制台。使用 `/help` 查看命令，`/url` 输出控制地址，`/status` 或 `/doctor` 查看诊断信息，`/call METHOD JSON_PARAMS` 调用现有 CLI 方法，`/exit` 关闭控制台但不停止服务。无人值守启动时设置 `WECHAT_NO_CONSOLE=1`。Demo 仅绑定 localhost，其他局域网设备无法访问。
+在交互终端中运行时，`start.sh` 会在服务就绪后打开 `wechatcli>` 控制台。使用 `/help` 查看命令，`/url` 输出控制地址，`/status` 或 `/doctor` 查看诊断信息，`/exit` 关闭控制台但不停止服务。控制台也提供常用短命令，例如 `/chat False 111` 发送消息、`/read False 30` 读取消息、`/find False keyword` 搜索消息、`/recall False 111` 撤回、`/like False post_text` 点赞、`/feed` 打开全局朋友圈。完整能力仍可通过 `/call METHOD JSON_PARAMS` 或 `METHOD JSON_PARAMS` 调用。无人值守启动时设置 `WECHAT_NO_CONSOLE=1`。Demo 仅绑定 localhost，其他局域网设备无法访问。
 
 在 WSL 中运行 `stop-all.sh` 可停止本项目中由宿主启动的 MCP 进程、Demo、自动化服务、VNC、微信、Openbox 及 Xvfb 显示屏。Windows 中运行 `stop.all-wsl.bat` 会调用该脚本，然后执行 `wsl --shutdown`，这会停止全部 WSL 发行版。
 
