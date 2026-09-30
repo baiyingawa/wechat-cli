@@ -29,6 +29,10 @@ METHODS = {
     "session.remote": Method("session_remote", "Start local-only VNC with a password for SSH tunneling", {}, mutation=True),
     "session.gui": Method("session_gui", "Enable or disable the local Windows-accessible VNC GUI", {
         "enabled": {"type": "boolean"}}, ("enabled",), mutation=True),
+    "session.link": Method("session_link", "Create a one-time localhost VNC link for wechat-link", {
+        "scale_percent": {"type": "integer", "minimum": 25, "maximum": 100}}, mutation=True),
+    "session.link_close": Method("session_link_close", "Close one wechat-link viewer and revoke its credentials", {
+        "link_id": {"type": "string", "minLength": 32, "maxLength": 32}}, ("link_id",), mutation=True),
     "ui.windows": Method("ui_windows", "List current WeChat windows", {}),
     "ui.tree": Method("ui_tree", "Inspect optional accessibility tree", {}),
     "ui.screenshot": Method("screenshot", "Save a local screenshot", {
@@ -36,6 +40,8 @@ METHODS = {
         "window_id": {"type": "integer", "minimum": 1}}),
     "ui.maximize": Method("ui_maximize", "Fit client to virtual display", {}, mutation=True),
     "ui.reset": Method("ui_reset", "Close transient panels and restore the reusable chat surface", {}, mutation=True),
+    "ui.paste_text": Method("ui_paste_text", "Verify WeChat focus, then paste text through the Linux clipboard without sending", {
+        "text": {"type": "string", "minLength": 1, "maxLength": 10000}}, ("text",), mutation=True),
     "account.profile": Method("account_profile", "Read the locally cached account profile without UI interaction", {}),
     "state.resolve": Method("state_resolve", "After manual inspection, resolve an unknown execution; requires confirmation", {
         "key": {"type": "string", "minLength": 1, "maxLength": 200},

@@ -12,6 +12,8 @@ class Config:
     retention_days: int = 15
     width: int = 3840
     height: int = 2160
+    vnc_port: int = 5909
+    link_port: int = 0
 
     @property
     def state_dir(self):
@@ -47,9 +49,13 @@ class Config:
             height = int(os.environ.get("WECHAT_HEIGHT", "2160"))
             timeout = float(os.environ.get("WECHAT_TIMEOUT", "5"))
             retention_days = int(os.environ.get("WECHAT_RETENTION_DAYS", "15"))
+            vnc_port = int(os.environ.get("WECHAT_VNC_PORT", "5909"))
+            link_port = int(os.environ.get("WECHAT_LINK_PORT", "0"))
         except ValueError as error:
             raise AutomationError("INVALID_CONFIG", "WeChat CLI numeric environment setting is invalid") from error
-        if width < 800 or height < 600 or timeout <= 0 or retention_days < 0:
+        if (width < 800 or height < 600 or timeout <= 0 or retention_days < 0
+                or not 1 <= vnc_port <= 65535 or not 0 <= link_port <= 65535):
             raise AutomationError("INVALID_CONFIG", "Invalid WeChat CLI dimensions, timeout, or retention period")
         return cls(display=os.environ.get("WECHAT_DISPLAY", ":99"), timeout=timeout,
-                   retention_days=retention_days, width=width, height=height)
+                   retention_days=retention_days, width=width, height=height,
+                   vnc_port=vnc_port, link_port=link_port)
