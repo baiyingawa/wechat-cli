@@ -13,6 +13,8 @@ def parser():
     result = argparse.ArgumentParser(prog="wechat-cli", description="JSON-first Linux WeChat automation")
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("capabilities", help="List methods and parameter schemas without a display")
+    methods = commands.add_parser("methods", help="List callable WeChat methods and CLI syntax")
+    methods.add_argument("method", nargs="?", help="Show details for one method")
     commands.add_parser("doctor", help="Inspect the connected desktop")
     call = commands.add_parser("call", help="Call a method with a JSON object")
     call.add_argument("method")
@@ -30,6 +32,31 @@ def parser():
     return result
 
 
+def print_methods(method_name=None):
+    methods = capabilities()["methods"]
+    selected = [item for item in methods if item["method"] == method_name] if method_name else methods
+    if method_name and not selected:
+        raise AutomationError("UNKNOWN_METHOD", f"Unknown method: {method_name}")
+    print("Usage: wechat-cli call METHOD --params JSON [--idempotency-key KEY] [--confirm-token TOKEN]")
+    print("Interactive console: METHOD JSON [--key KEY] [--confirm TOKEN]")
+    print("Destructive methods must first obtain a confirm_token, then repeat the identical request within 120 seconds.")
+    for item in selected:
+        schema = item.get("params_schema", {})
+        required = ", ".join(schema.get("required", ())) or "none"
+        properties = schema.get("properties", {})
+        parameters = ", ".join(
+            f"{name}:{definition.get('type', 'value')}"
+            for name, definition in properties.items()
+        ) or "none"
+        flags = []
+        if item.get("idempotency_required"):
+            flags.append("idempotency key")
+        if item.get("destructive"):
+            flags.append("confirmation")
+        suffix = f"; requires {', '.join(flags)}" if flags else ""
+        print(f"\n{item['method']}\n  {item.get('description', '')}\n  required: {required}\n  parameters: {parameters}{suffix}")
+
+
 def emit(response):
     try:
         sys.stdout.buffer.write(encode(response))
@@ -44,6 +71,9 @@ def main(argv=None):
         emit({"protocol_version": 1, "ok": True, "result": capabilities()})
         return
     try:
+        if arguments.command == "methods":
+            print_methods(arguments.method)
+            return
         config = Config.from_env()
         if sys.platform != "linux":
             raise AutomationError("LINUX_REQUIRED", "Run inside Linux or WSL")
