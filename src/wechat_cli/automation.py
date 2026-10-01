@@ -330,30 +330,6 @@ class Automation:
         from .deployment import start_remote, stop_remote
         return start_remote(self.config) if enabled else stop_remote(self.config)
 
-    def session_link(self, scale_percent=50):
-        from .deployment import start_link
-        self.session_start()
-        return start_link(self.config, scale_percent=scale_percent)
-
-    def session_link_close(self, link_id):
-        from .deployment import stop_link
-        return stop_link(self.config, link_id)
-
-    def ui_paste_text(self, text):
-        if not isinstance(text, str) or not text:
-            raise AutomationError("INVALID_PARAMS", "text must not be empty")
-        desktop = self.connect()
-        desktop.begin_input()
-        focus = desktop.connection.get_input_focus().focus
-        allowed = {window.id for window in desktop.windows()}
-        while getattr(focus, "id", None) not in allowed:
-            if not hasattr(focus, "query_tree") or focus.id == desktop.root.id:
-                raise AutomationError("FOCUS_UNVERIFIED", "Click a WeChat input field in the viewer before pasting")
-            focus = focus.query_tree().parent
-        desktop.paste(text)
-        return {"status": "pasted", "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
-                "note": "Text was pasted into the currently focused WeChat field; it was not sent"}
-
     def session_logout(self):
         main = self.prepare()
         desktop = self.connect()

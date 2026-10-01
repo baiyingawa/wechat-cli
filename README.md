@@ -91,7 +91,7 @@ ssh -L 5909:127.0.0.1:5909 USER@HOST
 
 ## Windows 图形界面
 
-也可以双击根目录的 `wechat-link.bat`，使用带窗口和托盘的 Windows 原型启动器。它通过 WSL 或 SSH 获取一次性凭据并自动打开 TigerVNC，支持显示比例和本地中文输入粘贴；SSH 模式只通过回环端口隧道传输 VNC。安装与验证结果见 [wechat-link 使用说明](wechat-link/README.md)。第一阶段尚未实现控制租约，手动操作与自动化仍需错开。
+需要在 Windows 上远程操作云端微信时，推荐了解第三方项目 [WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)，并按照该项目的 README 自行安装和配置。它是独立项目，本项目未验证与其部署环境的兼容性。
 
 可使用 Windows GUI 开关，从 Windows 手动操作同一个全屏 Xvfb 微信会话：
 

@@ -1,5 +1,4 @@
 import os
-import base64
 import pty
 import secrets
 import select
@@ -8,8 +7,6 @@ import shutil
 import socket
 import subprocess
 import time
-import threading
-import uuid
 from pathlib import Path
 
 from Xlib.error import DisplayConnectionError
@@ -111,96 +108,6 @@ def start_remote(config):
             "security_note": "VNC authentication is legacy; use an SSH tunnel over the network"}
 
 
-def find_free_port(requested=0):
-    if requested:
-        if local_port_ready(requested):
-            raise AutomationError("VNC_PORT_IN_USE", f"Port {requested} is already in use")
-        return requested
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
-
-
-def start_link(config, ttl=300, scale_percent=50):
-    if not shutil.which("x11vnc"):
-        raise AutomationError("VNC_UNAVAILABLE", "Install x11vnc before creating a link")
-    if ttl < 30 or ttl > 3600:
-        raise AutomationError("INVALID_PARAMS", "Link lifetime must be between 30 and 3600 seconds")
-    if type(scale_percent) is not int or not 25 <= scale_percent <= 100:
-        raise AutomationError("INVALID_PARAMS", "scale_percent must be between 25 and 100")
-    state_dir = config.state_dir / "links"
-    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    state_dir.chmod(0o700)
-    link_id = uuid.uuid4().hex
-    password = secrets.token_urlsafe(8)[:8]
-    password_file = state_dir / f"{link_id}.passwd"
-    port = find_free_port(getattr(config, "link_port", 0))
-    try:
-        create_vnc_password(password, password_file)
-        password_file.chmod(0o600)
-        encoded_password = base64.b64encode(password_file.read_bytes()).decode("ascii")
-        log_dir = config.state_dir / "logs"
-        log_dir.mkdir(mode=0o700, exist_ok=True)
-        log_dir.chmod(0o700)
-        log_file = log_dir / f"link-{link_id}.log"
-        with log_file.open("x"):
-            pass
-        log_file.chmod(0o600)
-        process = launch(["x11vnc", "-display", config.display, "-localhost", "-listen", "127.0.0.1", "-no6", "-once",
-                          "-nevershared", "-rfbauth", str(password_file), "-rfbport", str(port),
-                          "-timeout", str(ttl), "-o", str(log_file), "-noxrecord",
-                          "-scale", str(scale_percent / 100)], config.display)
-        def ready():
-            if process.poll() is not None:
-                raise AutomationError("VNC_START_FAILED", "One-time VNC server exited; inspect the local log",
-                                      {"log_path": str(log_file)})
-            return local_port_ready(port) and remote_process_running(config.display, password_file, port)
-
-        wait_until(ready, lambda timeout: time.sleep(timeout),
-                   5, "one-time VNC port")
-    except Exception:
-        if "process" in locals() and process.poll() is None:
-            process.terminate()
-        password_file.unlink(missing_ok=True)
-        raise
-
-    def reap():
-        try:
-            process.wait()
-        finally:
-            password_file.unlink(missing_ok=True)
-
-    threading.Thread(target=reap, name=f"wechat-link-{link_id}", daemon=True).start()
-    return {"link_id": link_id, "transport": "vnc", "bind": "127.0.0.1", "port": port,
-            "windows_endpoint": f"127.0.0.1:{port}", "password": password,
-            "password_file_base64": encoded_password,
-            "expires_in_seconds": ttl, "one_time": True,
-            "log_path": str(log_file),
-            "scale_percent": scale_percent,
-            "security_note": "VNC accepts one viewer and listens on localhost only; use SSH forwarding for servers",
-            "paste_method": "ui.paste_text"}
-
-
-def stop_link(config, link_id):
-    if not isinstance(link_id, str) or len(link_id) != 32 or any(character not in "0123456789abcdef" for character in link_id):
-        raise AutomationError("INVALID_PARAMS", "link_id must be a 32-character lowercase hex identifier")
-    password_file = config.state_dir / "links" / f"{link_id}.passwd"
-    if password_file.is_symlink():
-        raise AutomationError("UNSAFE_CREDENTIAL", "VNC credentials must not be symlinks")
-    processes = subprocess.run(["pgrep", "-x", "x11vnc"], capture_output=True, text=True)
-    stopped = []
-    for candidate in processes.stdout.split():
-        try:
-            process_id = int(candidate)
-            arguments = Path(f"/proc/{process_id}/cmdline").read_bytes().split(b"\0")
-            if (os.fsencode(password_file) in arguments and config.display.encode() in arguments
-                    and b"-localhost" in arguments and b"-once" in arguments):
-                os.kill(process_id, signal.SIGTERM)
-                stopped.append(process_id)
-        except (OSError, ValueError):
-            continue
-    password_file.unlink(missing_ok=True)
-    return {"link_id": link_id, "status": "closed", "stopped_processes": stopped}
 
 
 def local_port_ready(port):
