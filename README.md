@@ -2,7 +2,7 @@
 
 面向**官方 Linux 微信客户端**的 Linux/WSL 桌面自动化工具。请求、响应及错误均使用 JSON。它通过常规 X11 鼠标/键盘输入与屏幕截图操作，不使用私有协议、代码注入或直接访问微信进程内存。专用的 3840x2160 Xvfb 显示屏可以呈现更多内容；操作通过可见界面变化确认，而非依赖固定等待时间。OCR 识别存在误差：**不要把视觉识别出的名称或消息当作稳定 ID 或绝对事实**。
 
-当前版本：`v0.2.0`。更新清单见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：`v0.2.0`。更新清单见 [GitHub Releases](https://github.com/baiyingawa/wechat-cli/releases/tag/v0.2.0)。
 
 ## 设计重点
 
