@@ -61,7 +61,7 @@ class MCPServer:
             return {"jsonrpc": "2.0", "id": request_id, "result": {
                 "protocolVersion": protocol_version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "wechat-cli", "version": "0.1.0"},
+                "serverInfo": {"name": "wechat-cli", "version": "0.2.0"},
             }}
         if method == "ping":
             return {"jsonrpc": "2.0", "id": request_id, "result": {}}

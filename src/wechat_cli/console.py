@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import re
 import shlex
@@ -77,12 +78,14 @@ def qr_terminal_art(path, columns=48):
 
 
 def run_login(config, methods):
+    from .routing import resolve
+    config = resolve(config)
     print(styled("正在启动并识别登录界面；扫码后会自动检测登录完成。按 Ctrl-C 返回控制台。", "warning"))
     last_qr_digest = None
     screenshot_printed = False
     while True:
         request = build_request("session.login", {}, methods)
-        response = service.call(config, request)
+        response = service.call(config, request, follow_target=False)
         if not response.get("ok"):
             print_json(response)
             return
@@ -94,7 +97,11 @@ def run_login(config, methods):
         qr = result.get("qr")
         if qr and qr["digest"] != last_qr_digest:
             print("二维码截图：" + styled(qr["path"], "link"))
-            print(qr_terminal_art(qr["path"]))
+            if config.target == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+                from .woc import read_login_qr
+                print(qr_terminal_art(io.BytesIO(read_login_qr(config, qr["path"]))))
+            else:
+                print(qr_terminal_art(qr["path"]))
             last_qr_digest = qr["digest"]
         elif screenshot and not screenshot_printed:
             print("登录界面截图：" + styled(screenshot["path"], "link"))
@@ -116,7 +123,7 @@ def print_help(method_name=None):
         commands = [
             ("/start | /login | /logout", "Start WeChat; auto-click login and show QR; log out"),
             ("/status | /maximize | /reset", "Check session, maximize, or restore chat view"),
-            ("/gui on|off | /remote", "Toggle Windows VNC access or show remote VNC details"),
+            ("/target [local|woc CONTAINER]", "Show or switch the live automation target"),
             ("/chat CHAT TEXT", "Send a message, e.g. /chat False 111"),
             ("/open CHAT | /read CHAT [LIMIT]", "Open a chat or read up to 30 messages"),
             ("/find CHAT TEXT | /recall CHAT TEXT", "Search recent messages or recall one"),
@@ -190,16 +197,20 @@ def parse_invocation(tokens, methods):
 
 
 def parse_shortcut(command, tokens, methods):
-    if command in ("/start", "/login", "/logout", "/maximize", "/reset", "/remote"):
+    if command in ("/start", "/login", "/logout", "/maximize", "/reset"):
         if tokens:
             raise ValueError(f"Usage: {command}")
         method = {"/start": "session.start", "/login": "session.login", "/logout": "session.logout",
-                  "/maximize": "ui.maximize", "/reset": "ui.reset", "/remote": "session.remote"}[command]
+                  "/maximize": "ui.maximize", "/reset": "ui.reset"}[command]
         return build_request(method, {}, methods)
-    if command == "/gui":
-        if len(tokens) != 1 or tokens[0] not in ("on", "off"):
-            raise ValueError("Usage: /gui on|off")
-        return build_request("session.gui", {"enabled": tokens[0] == "on"}, methods)
+    if command == "/target":
+        if not tokens:
+            return build_request("target.status", {}, methods)
+        if tokens == ["local"]:
+            return build_request("target.select", {"target": "local"}, methods)
+        if len(tokens) == 2 and tokens[0] == "woc":
+            return build_request("target.select", {"target": "woc", "container": tokens[1]}, methods)
+        raise ValueError("Usage: /target [local|woc CONTAINER]")
     if command == "/chat":
         if len(tokens) < 2:
             raise ValueError("Usage: /chat CHAT TEXT")

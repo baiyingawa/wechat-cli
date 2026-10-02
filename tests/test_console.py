@@ -92,9 +92,11 @@ class ConsoleShortcutTests(unittest.TestCase):
         self.assertEqual(request["method"], "session.login")
         self.assertEqual(request["params"], {})
 
-    def test_gui_shortcut_accepts_on_and_off(self):
-        self.assertTrue(parse_shortcut("/gui", ["on"], self.methods)["params"]["enabled"])
-        self.assertFalse(parse_shortcut("/gui", ["off"], self.methods)["params"]["enabled"])
+    def test_target_shortcut_switches_live_target(self):
+        self.assertEqual(parse_shortcut("/target", ["local"], self.methods)["params"], {"target": "local"})
+        self.assertEqual(parse_shortcut("/target", ["woc", "woc-wx-test"], self.methods)["params"],
+                         {"target": "woc", "container": "woc-wx-test"})
+        self.assertEqual(parse_shortcut("/target", [], self.methods)["method"], "target.status")
 
     def test_read_shortcut_keeps_optional_limit_numeric(self):
         request = parse_shortcut("/read", ["False", "30"], self.methods)

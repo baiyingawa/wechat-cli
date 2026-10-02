@@ -26,9 +26,6 @@ METHODS = {
     "session.start": Method("session_start", "Start virtual display and WeChat if needed", {}, mutation=True),
     "session.login": Method("session_login", "Start manual phone login and return a local screenshot path", {}, mutation=True),
     "session.logout": Method("session_logout", "Log out through the native client confirmation", {}, mutation=True),
-    "session.remote": Method("session_remote", "Start local-only VNC with a password for SSH tunneling", {}, mutation=True),
-    "session.gui": Method("session_gui", "Enable or disable the local Windows-accessible VNC GUI", {
-        "enabled": {"type": "boolean"}}, ("enabled",), mutation=True),
     "ui.windows": Method("ui_windows", "List current WeChat windows", {}),
     "ui.tree": Method("ui_tree", "Inspect optional accessibility tree", {}),
     "ui.screenshot": Method("screenshot", "Save a local screenshot", {
@@ -161,6 +158,17 @@ PLANNED = {
 }
 
 SYSTEM_METHODS = (
+    {"method": "target.status", "status": "implemented", "verification": "local",
+     "description": "Read the current runtime automation target",
+     "params_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+     "mutation": False, "destructive": False, "idempotency_required": False},
+    {"method": "target.select", "status": "implemented", "verification": "local",
+     "description": "Switch subsequent requests without restarting clients or desktops",
+     "params_schema": {"type": "object", "properties": {
+         "target": {"type": "string", "enum": ["local", "woc"]},
+         "container": {"type": "string", "minLength": 1, "maxLength": 128}},
+         "required": ["target"], "additionalProperties": False},
+     "mutation": True, "destructive": False, "idempotency_required": False},
     {"method": "service.status", "status": "implemented", "verification": "local",
      "description": "Inspect automation service workload without waiting for desktop operations",
      "params_schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},

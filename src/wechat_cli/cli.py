@@ -1,7 +1,9 @@
 import argparse
 import json
+import os
 import sys
 import uuid
+from dataclasses import replace
 
 from .config import Config
 from .errors import AutomationError
@@ -29,6 +31,12 @@ def parser():
     demo.add_argument("--port", type=int, default=8765)
     service = commands.add_parser("service", help="Manage the local desktop service")
     service.add_argument("action", choices=("start", "serve", "stop", "status"))
+    woc = commands.add_parser("woc", help="Install or inspect the optional WechatOnCloud backend")
+    woc.add_argument("action", choices=("install", "status"))
+    woc.add_argument("container", nargs="?", help="WechatOnCloud instance container name")
+    target = commands.add_parser("target", help="Show or switch the runtime target without restarting")
+    target.add_argument("mode", nargs="?", choices=("local", "woc"))
+    target.add_argument("container", nargs="?")
     return result
 
 
@@ -78,8 +86,22 @@ def main(argv=None):
         if sys.platform != "linux":
             raise AutomationError("LINUX_REQUIRED", "Run inside Linux or WSL")
         from . import service
-        if arguments.command == "service":
+        if arguments.command == "target":
+            params = {"target": arguments.mode} if arguments.mode else {}
+            if arguments.container:
+                params["container"] = arguments.container
+            response = service.call(config, {"method": "target.select" if arguments.mode else "target.status",
+                                             "params": params})
+        elif arguments.command == "woc":
+            from . import woc
+            if arguments.container:
+                config = replace(config, woc_container=arguments.container)
+            result = woc.install(config) if arguments.action == "install" else woc.inspect(config)
+            response = {"protocol_version": 1, "ok": True, "result": result}
+        elif arguments.command == "service":
             if arguments.action == "serve":
+                if config.target == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+                    raise AutomationError("WOC_SERVICE_MANAGED", "Use service start; the worker serves inside the container")
                 service.serve(config)
                 return
             if arguments.action == "start":
@@ -87,7 +109,7 @@ def main(argv=None):
             elif arguments.action == "stop":
                 response = service.stop(config)
             else:
-                response = service.exchange(config, {"method": "ping"}, timeout=2)
+                response = service.status(config)
         elif arguments.command == "stdio":
             for raw in sys.stdin.buffer:
                 try:

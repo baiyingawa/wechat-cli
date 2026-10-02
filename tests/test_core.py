@@ -11,7 +11,7 @@ from wechat_cli.config import Config
 from wechat_cli.errors import AutomationError
 from wechat_cli.mcp import MCPServer
 from wechat_cli.automation import Automation
-from wechat_cli.deployment import create_vnc_password, display_ready, launch, start_remote, stop_remote
+from wechat_cli.deployment import display_ready, launch
 from wechat_cli.protocol import Dispatcher, decode
 from wechat_cli.registry import METHODS, capabilities, validate
 from wechat_cli.state import State
@@ -1321,66 +1321,6 @@ class DeploymentTests(unittest.TestCase):
         with patch.dict("os.environ", {"WECHAT_WIDTH": "100"}, clear=True), self.assertRaises(AutomationError) as error:
             Config.from_env()
         self.assertEqual(error.exception.code, "INVALID_CONFIG")
-
-    def test_vnc_launch_drops_wayland_environment(self):
-        with patch("wechat_cli.deployment.os.environ", {"WAYLAND_DISPLAY": "wayland-0"}), \
-             patch("wechat_cli.deployment.subprocess.Popen") as spawned:
-            launch(["x11vnc", "-display", ":99"], ":99")
-        environment = spawned.call_args.kwargs["env"]
-        self.assertNotIn("WAYLAND_DISPLAY", environment)
-        self.assertEqual(environment["DISPLAY"], ":99")
-
-    def test_refuses_symlink_credential(self):
-        with tempfile.TemporaryDirectory() as directory:
-            state_dir = Path(directory)
-            (state_dir / "vnc.secret").symlink_to(state_dir / "outside")
-            config = Mock(state_dir=state_dir)
-            with patch("wechat_cli.deployment.shutil.which", return_value="/usr/bin/x11vnc"):
-                with self.assertRaises(AutomationError) as context:
-                    start_remote(config)
-            self.assertEqual(context.exception.code, "UNSAFE_CREDENTIAL")
-
-    def test_refuses_unrelated_remote_listener(self):
-        with tempfile.TemporaryDirectory() as directory:
-            state_dir = Path(directory)
-            (state_dir / "vnc.secret").write_text("testpass")
-            (state_dir / "vnc.passwd").write_bytes(b"existing")
-            config = Mock(state_dir=state_dir, display=":99")
-            with patch("wechat_cli.deployment.shutil.which", return_value="/usr/bin/x11vnc"), \
-                 patch("wechat_cli.deployment.local_port_ready", return_value=True), \
-                 patch("wechat_cli.deployment.remote_process_running", return_value=False):
-                with self.assertRaises(AutomationError) as context:
-                    start_remote(config)
-            self.assertEqual(context.exception.code, "VNC_PORT_IN_USE")
-            self.assertEqual((state_dir / "vnc.secret").stat().st_mode & 0o777, 0o600)
-
-    def test_gui_disable_only_stops_its_matching_vnc_process(self):
-        with tempfile.TemporaryDirectory() as directory:
-            state_dir = Path(directory)
-            password_file = state_dir / "vnc.passwd"
-            password_file.write_bytes(b"existing")
-            config = Mock(state_dir=state_dir, display=":99")
-            with patch("wechat_cli.deployment.remote_process_ids", return_value=[1234]), \
-                 patch("wechat_cli.deployment.local_port_ready", side_effect=[True, False]), \
-                 patch("wechat_cli.deployment.os.kill") as terminate:
-                result = stop_remote(config)
-        self.assertEqual(result["status"], "disabled")
-        terminate.assert_called_once()
-
-    def test_gui_disable_refuses_an_unowned_listener(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = Mock(state_dir=Path(directory), display=":99")
-            with patch("wechat_cli.deployment.local_port_ready", return_value=True):
-                with self.assertRaises(AutomationError) as context:
-                    stop_remote(config)
-        self.assertEqual(context.exception.code, "VNC_PORT_IN_USE")
-
-    @unittest.skipUnless(__import__("shutil").which("x11vnc"), "x11vnc not installed")
-    def test_vnc_password_file_created_with_pty(self):
-        with tempfile.TemporaryDirectory() as directory:
-            destination = Path(directory) / "vnc.passwd"
-            create_vnc_password("testpass", destination)
-            self.assertTrue(destination.exists())
 
 
 if __name__ == "__main__":

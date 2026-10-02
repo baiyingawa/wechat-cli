@@ -8,8 +8,9 @@ RUNTIME_DIR=${XDG_RUNTIME_DIR:-"/tmp/wechat-cli-$(id -u)"}/wechat-cli
 cd -- "$ROOT_DIR"
 export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 export WECHAT_DISPLAY=${WECHAT_DISPLAY:-:99}
+ACTIVE_TARGET=$(python3 -c 'from wechat_cli.config import Config; from wechat_cli.routing import resolve; print(resolve(Config.from_env()).target)')
 
-if [[ -S "$RUNTIME_DIR/service.sock" || -f "$RUNTIME_DIR/service.pid" ]]; then
+if [[ $ACTIVE_TARGET == woc || -S "$RUNTIME_DIR/service.sock" || -f "$RUNTIME_DIR/service.pid" ]]; then
     python3 -m wechat_cli service stop || true
 fi
 
@@ -30,7 +31,10 @@ terminate '^python3 -m wechat_cli demo( |$)'
 terminate '^python -m wechat_cli demo( |$)'
 terminate '^python3 -m wechat_cli mcp( |$)'
 terminate '^python -m wechat_cli mcp( |$)'
-terminate '^x11vnc .* -display :99( |$)'
+if [[ $ACTIVE_TARGET == woc ]]; then
+    printf 'WOC automation stopped; the WechatOnCloud desktop and WeChat remain running.\n'
+    exit 0
+fi
 terminate '^openbox.*:99( |$)'
 terminate '^Xvfb :99( |$)'
 terminate '^/opt/wechat/'

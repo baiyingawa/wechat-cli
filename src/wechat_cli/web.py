@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 
 from . import service
 from .errors import AutomationError
+from .config import Config
+from .routing import queued_call, resolve, snapshot
 from .registry import capabilities
 from .task_queue import TaskRunner, TaskStore
 
@@ -97,6 +99,8 @@ def create_server(config, host, port):
                 self.respond(page, content_type="text/html; charset=utf-8", cookie=True)
             elif path == "/api/capabilities":
                 self.json(capabilities())
+            elif path == "/api/target":
+                self.json(service.call(config, {"method": "target.status"}))
             elif path == "/api/tasks":
                 self.json({"tasks": self.server.store.list(),
                            "active_context": self.server.store.active_context()})
@@ -114,7 +118,7 @@ def create_server(config, host, port):
         def do_POST(self):
             if not self.authorized():
                 return
-            if self.path != "/api/tasks":
+            if self.path not in ("/api/tasks", "/api/target"):
                 return self.json({"error": "not found"}, 404)
             content_types = self.headers.get_all("Content-Type", [])
             if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
@@ -127,10 +131,16 @@ def create_server(config, host, port):
                     raise ValueError("request body must be 1 byte to 1 MiB")
                 request = json.loads(self.rfile.read(length),
                                      parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+                if self.path == "/api/target":
+                    response = service.call(config, {"method": "target.select", "params": request})
+                    return self.json(response, 200 if response.get("ok") else 400)
                 if (not isinstance(request, dict) or not isinstance(request.get("method"), str)
                         or request["method"] not in available_methods
-                        or not isinstance(request.get("params", {}), dict)):
+                        or not isinstance(request.get("params", {}), dict)
+                        or set(request) - {"id", "method", "params", "protocol_version", "idempotency_key", "confirm_token"}):
                     raise ValueError("invalid method or params")
+                if isinstance(config, Config):
+                    request["_route"] = snapshot(resolve(config))
                 task, fresh = self.server.store.enqueue(request)
                 if fresh:
                     self.server.work.put(task["id"])
@@ -149,6 +159,8 @@ def create_server(config, host, port):
     server = server_type((host, port), Handler)
     server.store = TaskStore(config.state_dir / "demo.sqlite3", idempotent_methods)
     server.store.recover_interrupted()
+    if isinstance(config, Config):
+        server.store.bind_queued(snapshot(resolve(config)))
     server.work = queue.Queue()
     for task_id in server.store.queued_ids():
         server.work.put(task_id)
@@ -157,7 +169,7 @@ def create_server(config, host, port):
 
 def serve(config, host, port):
     server = create_server(config, host, port)
-    runner = TaskRunner(server.store, lambda request: service.call(config, request))
+    runner = TaskRunner(server.store, lambda request: queued_call(config, request))
     stopping = threading.Event()
 
     def worker():

@@ -67,7 +67,13 @@ def decode_response(raw):
         raise AutomationError("INVALID_RESPONSE", "Service returned invalid JSON") from error
 
 
-def start(config):
+def start(config, follow_target=True):
+    from .routing import resolve
+    if follow_target:
+        config = resolve(config)
+    if getattr(config, "target", "local") == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+        from .woc import service_action
+        return service_action(config, "start")
     try:
         return exchange(config, {"method": "ping"}, timeout=1)
     except AutomationError as error:
@@ -77,7 +83,8 @@ def start(config):
     config.runtime_dir.chmod(0o700)
     process = subprocess.Popen([sys.executable, "-m", "wechat_cli", "service", "serve"],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        start_new_session=True, env={**os.environ, "WECHAT_DISPLAY": config.display})
+        start_new_session=True, env={**os.environ, "WECHAT_DISPLAY": config.display,
+                                     "WECHAT_TARGET": config.target, "WECHAT_SERVICE_WORKER": "1"})
     ready, _, _ = select.select([process.stdout], [], [], 8)
     if not ready:
         process.terminate()
@@ -99,14 +106,31 @@ def start(config):
     return response
 
 
-def call(config, request):
+def call(config, request, follow_target=True):
+    from .routing import CONTROL_METHODS, handle, resolve
+    if isinstance(request, dict) and isinstance(request.get("method"), str) and request["method"] in CONTROL_METHODS:
+        return handle(config, request)
+    if follow_target:
+        config = resolve(config)
+    if getattr(config, "target", "local") == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+        from .woc import call as woc_call
+        return woc_call(config, request)
     try:
         return exchange(config, request)
     except AutomationError as error:
         if error.code != "SERVICE_UNAVAILABLE":
             raise
-        start(config)
+        start(config, follow_target=False)
         return exchange(config, request)
+
+
+def status(config):
+    from .routing import resolve
+    config = resolve(config)
+    if getattr(config, "target", "local") == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+        from .woc import service_action
+        return service_action(config, "status")
+    return exchange(config, {"method": "service.status"}, timeout=2)
 
 
 def serve(config):
@@ -234,6 +258,11 @@ def serve(config):
 
 
 def stop(config):
+    from .routing import resolve
+    config = resolve(config)
+    if getattr(config, "target", "local") == "woc" and os.environ.get("WECHAT_WOC_WORKER") != "1":
+        from .woc import service_action
+        return service_action(config, "stop")
     path = config.runtime_dir / "service.pid"
     if not path.exists():
         return {"ok": True, "result": {"status": "not_running"}}

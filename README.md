@@ -2,7 +2,7 @@
 
 面向**官方 Linux 微信客户端**的 Linux/WSL 桌面自动化工具。请求、响应及错误均使用 JSON。它通过常规 X11 鼠标/键盘输入与屏幕截图操作，不使用私有协议、代码注入或直接访问微信进程内存。专用的 3840x2160 Xvfb 显示屏可以呈现更多内容；操作通过可见界面变化确认，而非依赖固定等待时间。OCR 识别存在误差：**不要把视觉识别出的名称或消息当作稳定 ID 或绝对事实**。
 
-当前版本：`v0.1.0`
+当前版本：`v0.2.0`。更新清单见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 设计重点
 
@@ -15,7 +15,7 @@
 适用于已在 Ubuntu 24.04 上安装 Linux 微信客户端，且客户端位于 `/opt/wechat/wechat` 或 `PATH` 中的环境：
 
 ```sh
-sudo apt-get install xvfb x11vnc xclip tesseract-ocr tesseract-ocr-chi-sim
+sudo apt-get install xvfb xclip tesseract-ocr tesseract-ocr-chi-sim
 python3 -m pip install --user -e .
 export WECHAT_DISPLAY=:99
 export WECHAT_WIDTH=3840 WECHAT_HEIGHT=2160
@@ -64,11 +64,11 @@ Linux 或已在 WSL 中运行的 MCP 宿主可直接指向 `mcp.sh`：
 
 Windows 中运行 `start-wsl.bat` 会打开标题为 `wechatcli` 的命令行窗口，进入 Windows 默认 WSL 发行版并运行 `start.sh`。脚本开头会输出浏览器控制地址，随后启动 `:99` 微信会话与 `http://127.0.0.1:8765` 的本地 Demo，并校验 MCP 启动器。可在运行任一批处理文件前设置 `WECHAT_CLI_WSL_DISTRO` 选择特定发行版。
 
-在交互终端中运行时，`start.sh` 会在服务就绪后打开 `wechatcli>` 控制台。使用 `/help` 查看常用短命令，`/exit` 关闭控制台但不停止服务。`/login` 会按需启动客户端、自动点击唯一识别出的“登录”按钮、保存登录界面与检测到的二维码截图，并在二维码变化时刷新字符预览；扫码后会自动检测登录完成，按 `Ctrl-C` 可停止等待。会话命令还包括 `/start`、`/logout`、`/status`、`/maximize`、`/reset`、`/gui on|off` 与 `/remote`；消息命令例如 `/chat False 111`、`/read False 30`、`/find False keyword`、`/recall False 111`。`/like False post_text` 可点赞，`/feed` 打开全局朋友圈。使用 `/methods` 查看底层能力名称，使用 `/help METHOD` 查看指定能力参数；完整能力仍可通过 `/call METHOD JSON_PARAMS` 或 `METHOD JSON_PARAMS` 调用。无人值守启动时设置 `WECHAT_NO_CONSOLE=1`。Demo 仅绑定 localhost，其他局域网设备无法访问。
+在交互终端中运行时，`start.sh` 会在服务就绪后打开 `wechatcli>` 控制台。使用 `/help` 查看常用短命令，`/exit` 关闭控制台但不停止服务。`/login` 会按需启动客户端、自动点击唯一识别出的“登录”按钮、保存登录界面与检测到的二维码截图，并在二维码变化时刷新字符预览；扫码后会自动检测登录完成，按 `Ctrl-C` 可停止等待。会话命令还包括 `/start`、`/logout`、`/status`、`/maximize`、`/reset` 与 `/target`；消息命令例如 `/chat False 111`、`/read False 30`、`/find False keyword`、`/recall False 111`。`/like False post_text` 可点赞，`/feed` 打开全局朋友圈。使用 `/methods` 查看底层能力名称，使用 `/help METHOD` 查看指定能力参数；完整能力仍可通过 `/call METHOD JSON_PARAMS` 或 `METHOD JSON_PARAMS` 调用。无人值守启动时设置 `WECHAT_NO_CONSOLE=1`。Demo 仅绑定 localhost，其他局域网设备无法访问。
 
 控制台在终端中自动启用颜色与加粗：命令和提示符为青色，成功状态为绿色，错误为红色，登录等待提示为黄色，操作网址带下划线，JSON 结果按字段和值高亮。重定向或管道输出保持纯文本，CLI 的机器接口和 MCP 输出格式不变。设置 `NO_COLOR=1` 可关闭颜色与加粗（例如 `NO_COLOR=1 ./console.sh`）；`TERM=dumb` 也会关闭样式。二维码字符预览保持原样。
 
-在 WSL 中运行 `stop-all.sh` 可停止本项目中由宿主启动的 MCP 进程、Demo、自动化服务、VNC、微信、Openbox 及 Xvfb 显示屏。Windows 中运行 `stop.all-wsl.bat` 会调用该脚本，然后执行 `wsl --shutdown`，这会停止全部 WSL 发行版。
+在 WSL 中运行 `stop-all.sh` 按当前目标停止本项目进程。独立模式会停止 MCP、Demo、自动化服务、微信、Openbox 及 Xvfb；WOC 模式保留其微信桌面。Windows 中运行 `stop.all-wsl.bat` 会调用该脚本，然后执行 `wsl --shutdown`，这会停止全部 WSL 发行版。
 
 ### 本地 Demo
 
@@ -80,32 +80,45 @@ wechat-cli demo
 
 在本机打开 `http://127.0.0.1:8765`。Demo 根据与 CLI 相同的 schema 渲染所有已实现能力，串行创建任务，并将任务状态和结果持久化到 `~/.local/state/wechat-cli/demo.sqlite3`。页面首次打开时建立仅限本次进程的 HttpOnly、SameSite 会话 Cookie；API 校验 localhost `Host`、同源 `Origin`、JSON `Content-Type`，不允许跨源预检和跨站请求。页面使用 CSP nonce，任务内容通过 DOM `textContent` 写入，避免把聊天名称当作 HTML 执行。15 秒内相同的方法/参数提交会关联至原任务，不会重复点击。每个可执行任务记录 `enter`、`operate`、`reset` 阶段。一次聊天操作通过验证后，其 reset 阶段最多保持 3 分钟：同一聊天的下一任务会直接复用操作界面；其他聊天则会先重置前一界面再进入目标界面。Demo 只绑定 localhost。它会为需要幂等键的操作自动生成幂等键；破坏性确认操作需粘贴前一任务返回的 `confirm_token`，Demo 会从本地任务历史中恢复原始幂等键；重启时执行中的任务会标记为 `unknown`，不会自动重试。
 
-如需远程查看：
+## 独立模式与 WechatOnCloud 联动
+
+独立模式只运行虚拟显示屏和官方微信客户端，不安装或管理 VNC，也不提供旧的 `session.gui`、`session.remote` 接口。需要浏览器图形访问时，推荐第三方项目 [WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)。CLI 的可选 Docker 适配会操作 WOC 浏览器里的同一个微信实例，无需改动 WOC 源码。
+
+### 安装 WOC 适配
+
+先在 WOC 面板创建并启动微信实例，然后在 Docker 所在的 Linux/WSL 宿主从本仓库源码安装：
 
 ```sh
-wechat-cli call session.remote
-ssh -L 5909:127.0.0.1:5909 USER@HOST
+python3 -m pip install -e .
+docker ps --format '{{.Names}}'
+wechat-cli woc install woc-wx-实例ID
+wechat-cli woc status woc-wx-实例ID
 ```
 
-通过 SSH 隧道让 VNC 查看器连接 `localhost:5909`。`session.remote` 会在 JSON 中返回密码，**不要记录或转发该输出**。VNC 监听器仅绑定 localhost，VNC 的旧式密码认证不能替代 SSH。`~/.local/state/wechat-cli/` 下的凭据文件权限为 `0600`。在常规 WSL2 配置中，Windows 程序也可能访问 WSL 的本地端口。
+安装器在实例中补齐 Python、Tesseract 和剪贴板依赖，将源码和虚拟环境安装到 `/config/.wechat-cli`。重复执行可更新代码；WOC 重建镜像后请再次运行以恢复系统依赖。安装下载较慢时，可以设置 `WECHAT_WOC_PIP_INDEX_URL` 指向可信的 PyPI 镜像。正常调用不会重复安装。
 
-## Windows 图形界面
+### 实时切换
 
-需要在 Windows 上远程操作云端微信时，推荐了解第三方项目 [WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)，并按照该项目的 README 自行安装和配置。它是独立项目，本项目未验证与其部署环境的兼容性。
-
-可使用 Windows GUI 开关，从 Windows 手动操作同一个全屏 Xvfb 微信会话：
+CLI、已打开的交互控制台、Demo 和 MCP 共用运行时目标，切换无需重启它们，也不会重启或退出微信：
 
 ```sh
-wechat-cli call session.gui --params '{"enabled":true}'
+wechat-cli target                         # 查看当前目标
+wechat-cli target woc woc-wx-实例ID        # 切换到 WOC
+wechat-cli call session.status
+wechat-cli target local                   # 切回独立模式
 ```
 
-结果会包含一次性本地 VNC 密码。在 Windows VNC 查看器中连接 `127.0.0.1:5909`；常规 WSL2 安装会将 WSL localhost 端口转发到 Windows。查看器与 CLI 共享同一个客户端，因此自动化任务执行期间不要移动鼠标。结束后关闭图形访问：
+交互控制台使用 `/target`、`/target woc woc-wx-实例ID` 和 `/target local`。Demo 顶部提供模式、实例名称和切换按钮，可直接切换，不必等待任务队列。MCP 使用 `wechat_call` 调用 `target.status` 或 `target.select`，例如参数 `{"target":"woc","container":"woc-wx-实例ID"}`。
 
-```sh
-wechat-cli call session.gui --params '{"enabled":false}'
-```
+目标选择通过宿主私有运行时目录共享，同一 Linux 用户及 `XDG_RUNTIME_DIR` 下的客户端在下一请求立即生效；共享选择优先于启动时的 `WECHAT_TARGET` 环境变量。运行时目录清理或系统重启后，回到环境变量配置的初始目标（默认 `local`）。WOC 切换前会检查 worker 是否就绪，失败则保留原目标。
 
-此开关仅启动或停止本工具的 localhost `x11vnc` 进程，不会将显示屏暴露到局域网，也不会关闭微信或 Xvfb。
+正在执行的请求和已入队任务固定在原目标，进入聊天、执行操作、延迟重置均不会跳到新实例。新任务采用新的目标；相同请求的去重及聊天工作面复用也按目标隔离。切换操作目标不会迁移账号数据或登录态：独立模式操作本地显示屏，WOC 模式操作指定容器里已经运行的微信。
+
+`./start.sh`、`./console.sh`、`./mcp.sh` 会沿用实时选择。`./stop-all.sh` 按当前目标停止：WOC 模式只停止自动化和宿主控制程序，保留容器、桌面与微信；独立模式停止本地会话。`stop.all-wsl.bat` 仍会关闭全部 WSL。
+
+WOC 的图形界面和中文输入继续由 WOC 管理；控制台 `/login` 可打印容器二维码预览。文件参数与返回的截图、下载、头像路径均属于容器，可通过 WOC 数据卷管理或 `docker cp` 取用。浏览器与自动化共享输入，任务执行期间请暂停手动操作；本适配尚不提供 WOC 网页输入租约。
+
+可选配置：`WECHAT_WOC_DISPLAY` 默认 `:1`，`WECHAT_WOC_USER` 默认 `abc`，`WECHAT_WOC_PYTHON` 默认 `/config/.wechat-cli/venv/bin/python`。独立显示屏默认 `:99`；使用 WOC 作为初始目标时，可用 `WECHAT_LOCAL_DISPLAY` 指定切回独立模式的显示屏。适配复用容器内常驻服务、OCR 和 XDamage，不依赖固定等待。客户端界面与显示设置变化仍可能影响视觉识别。
 
 ## 面向机器的调用
 
@@ -154,7 +167,7 @@ wechat-cli stdio
 
 | 区域 | 可用方法 | 限制 |
 | --- | --- | --- |
-| 会话与诊断 | `session.start`, `session.status`, `session.login`, `session.logout`, `session.remote`, `session.gui`, `doctor`, `ui.windows`, `ui.tree`, `ui.screenshot`, `ui.maximize`, `ui.reset` | 需要手动手机登录；`session.gui` 仅通过 localhost VNC 暴露同一会话；`ui.reset` 关闭主窗口详情面板并返回会话列表；该客户端没有可用的 AT-SPI 无障碍树。 |
+| 会话与诊断 | `session.start`, `session.status`, `session.login`, `session.logout`, `doctor`, `ui.windows`, `ui.tree`, `ui.screenshot`, `ui.maximize`, `ui.reset` | 需要手动手机登录；图形访问由 WechatOnCloud 提供；`ui.reset` 关闭主窗口详情面板并返回会话列表；该客户端没有可用的 AT-SPI 无障碍树。 |
 | 账号 | `account.profile`, `account.refresh` | 在 `~/.local/state/wechat-cli/account/avatar.png` 保存显示名称、微信号与打开后的头像。刷新最多每两小时一次；空闲五分钟且缓存至少一天未更新、没有二级微信窗口时，服务会尝试刷新。 |
 | 聊天 | `chat.open`, `chat.list`, `chat.pin`, `chat.mute` | 匹配可见显示名称和 OCR 行，不使用不可变账号 ID。 |
 | 消息 | `message.read`, `message.search`, `message.send`, `message.send_file`, `message.download`, `message.reply`, `message.forward`, `message.revoke`, `message.pat`, `message.pat_revoke`, `message.delete`, `message.voice_text` | `message.pat` 查找最近可见头像；必要时最多向上搜索三页。`message.pat_revoke` 仅在可见己方拍一拍提示的悬停控件可被唯一读取时执行。搜索最多覆盖视觉读取到的 30 条近期消息；OCR 和易变的视觉摘要可能失败。下载绝不会覆盖已有文件。 |

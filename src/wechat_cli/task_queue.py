@@ -53,6 +53,9 @@ def interface_plan(request):
     if method not in REUSABLE_CHAT_METHODS or not isinstance(chat, str) or not chat.strip():
         return InterfacePlan(None)
     context = f"chat:{chat.strip()}"
+    route = request.get("_route")
+    if route:
+        context = f"{route['target']}:{route.get('container', '')}:{route.get('display', '')}:{context}"
     if method == "chat.open":
         return InterfacePlan(context)
     return InterfacePlan(context, "chat.open", {"chat": chat},
@@ -120,8 +123,10 @@ class TaskStore:
 
     @staticmethod
     def request_digest(request):
+        if request.get("method") in ("target.select", "target.status"):
+            return uuid.uuid4().hex
         return hashlib.sha256(json.dumps(
-            [request.get("method"), request.get("params", {}), request.get("confirm_token")],
+            [request.get("method"), request.get("params", {}), request.get("confirm_token"), request.get("_route")],
             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     @staticmethod
@@ -199,6 +204,19 @@ class TaskStore:
             rows = self.connection.execute(
                 "SELECT id FROM web_tasks WHERE status='queued' ORDER BY created").fetchall()
         return [row[0] for row in rows]
+
+    def bind_queued(self, route):
+        with self.lock:
+            rows = self.connection.execute("SELECT id,request FROM web_tasks WHERE status='queued'").fetchall()
+            for task_id, raw in rows:
+                request = json.loads(raw)
+                if "_route" in request:
+                    continue
+                request["_route"] = route
+                self.connection.execute("UPDATE web_tasks SET request=?,digest=?,context=? WHERE id=?",
+                                        (json.dumps(request, ensure_ascii=False), self.request_digest(request),
+                                         interface_plan(request).context, task_id))
+            self.connection.commit()
 
     def recover_interrupted(self):
         now = self.now()
@@ -360,8 +378,11 @@ class TaskRunner:
                                     result={"reason": "operation_enters_interface", "context": plan.context})
         else:
             self.store.update_phase(task["id"], "enter", "running")
-            entered = self._execute({"id": f"{task['id']}:enter", "method": plan.enter_method,
-                                     "params": dict(plan.enter_params or {})})
+            enter_request = {"id": f"{task['id']}:enter", "method": plan.enter_method,
+                             "params": dict(plan.enter_params or {})}
+            if "_route" in task["request"]:
+                enter_request["_route"] = task["request"]["_route"]
+            entered = self._execute(enter_request)
             if not entered.get("ok"):
                 self.store.update_phase(task["id"], "enter", "failed", result=entered)
                 self.store.update_phase(task["id"], "operate", "skipped",
@@ -397,7 +418,11 @@ class TaskRunner:
     def _reset_active(self, active, reason):
         self.store.update_phase(active["task_id"], "reset", "running",
                                 result={"reason": reason, "context": active["context"]})
-        response = self._execute({"id": f"{active['task_id']}:reset", "method": "ui.reset", "params": {}})
+        request = {"id": f"{active['task_id']}:reset", "method": "ui.reset", "params": {}}
+        previous = self.store.get(active["task_id"])["request"]
+        if "_route" in previous:
+            request["_route"] = previous["_route"]
+        response = self._execute(request)
         self.store.update_phase(active["task_id"], "reset",
                                 "succeeded" if response.get("ok") else "failed",
                                 result={"reason": reason, "context": active["context"],

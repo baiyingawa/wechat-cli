@@ -6,3 +6,13 @@ build/
 dist/
 .pytest_cache/
 .runtime/
+
+# Local WechatOnCloud launchers and deployment files
+/start-wechatoncloud.bat
+/start-wechatoncloud.ps1
+/start-wechatoncloud.sh
+/setup-wechatoncloud-local.ps1
+/import-wechatoncloud-local.sh
+/wechatoncloud.local.md
+/WechatOnCloud/
+/wechatoncloud/

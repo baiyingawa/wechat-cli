@@ -5,6 +5,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from wechat_cli.web import create_server
 
@@ -45,13 +46,14 @@ class DemoSecurityTests(unittest.TestCase):
         self.assertNotIn(b"__CSP_NONCE__", page)
 
     def test_all_api_reads_require_a_session(self):
-        for path in ("/api/capabilities", "/api/tasks", "/api/tasks/missing"):
+        for path in ("/api/capabilities", "/api/tasks", "/api/tasks/missing", "/api/target"):
             with self.subTest(path=path):
                 self.assertEqual(self.request("GET", path)[0], 403)
                 self.assertEqual(self.request("GET", path, headers={"Cookie": "wechat_demo_token=wrong"})[0], 403)
 
     def test_external_origin_and_rebinding_host_are_rejected(self):
-        for method, path in (("GET", "/"), ("GET", "/api/tasks"), ("POST", "/api/tasks")):
+        for method, path in (("GET", "/"), ("GET", "/api/tasks"), ("POST", "/api/tasks"),
+                             ("GET", "/api/target"), ("POST", "/api/target")):
             for extra in ({"Origin": "https://attacker.example"}, {"Origin": "null"},
                           {"Host": f"attacker.example:{self.server.server_port}"},
                           {"Host": "127.0.0.1:1"}, {"Host": "127.0.0.1"}):
@@ -101,6 +103,22 @@ class DemoSecurityTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertEqual(self.request("POST", "/api/tasks", body, {
                     "Cookie": self.cookie, "Content-Type": "application/json"})[0], 400)
+
+    def test_target_switch_bypasses_queue_but_requires_authenticated_json(self):
+        headers = {"Cookie": self.cookie, "Content-Type": "application/json"}
+        body = '{"target":"local"}'
+        response = {"ok": True, "result": {"target": "local"}}
+        with patch("wechat_cli.web.service.call", return_value=response) as execute:
+            self.assertEqual(self.request("POST", "/api/target", body)[0], 403)
+            self.assertEqual(self.request("POST", "/api/target", body, {"Cookie": self.cookie})[0], 415)
+            self.assertEqual(self.request("POST", "/api/target", body, headers)[0], 200)
+            execute.assert_called_once_with(self.config, {"method": "target.select", "params": {"target": "local"}})
+        self.assertEqual(self.server.store.list(), [])
+
+    def test_client_cannot_inject_queue_target(self):
+        self.assertEqual(self.request("POST", "/api/tasks", json.dumps({
+            "method": "session.status", "_route": {"target": "woc", "container": "woc-wx-test"}}), {
+                "Cookie": self.cookie, "Content-Type": "application/json"})[0], 400)
 
     def test_token_is_rotated_on_restart(self):
         self.server.shutdown()

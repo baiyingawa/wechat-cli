@@ -129,7 +129,7 @@ class Automation:
                 "accessibility": {key: value for key, value in accessible.items() if key != "nodes"},
                 "accessible_nodes": len(accessible["nodes"]),
                 "tools": {name: shutil.which(name) for name in
-                          ("tesseract", "xclip", "Xvfb", "openbox", "x11vnc")},
+                          ("tesseract", "xclip", "Xvfb", "openbox")},
                 "performance": self.metrics()}
 
     def metrics(self):
@@ -321,14 +321,6 @@ class Automation:
         self._login_view = {"digest": digest, "screenshot": screenshot}
         self._login_qr = qr
         return {"screenshot": screenshot, "qr": qr}
-
-    def session_remote(self):
-        from .deployment import start_remote
-        return start_remote(self.config)
-
-    def session_gui(self, enabled):
-        from .deployment import start_remote, stop_remote
-        return start_remote(self.config) if enabled else stop_remote(self.config)
 
     def session_logout(self):
         main = self.prepare()
