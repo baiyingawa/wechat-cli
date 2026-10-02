@@ -187,4 +187,3 @@ wechat-cli stdio
 PYTHONPATH=src python3 -m unittest discover -s tests -q
 ```
 
-真实界面验证应使用已同意的专用测试联系人，并避免删除联系人或数据。`False` 仅是开发环境中的测试联系人，并非内置账号名称。
